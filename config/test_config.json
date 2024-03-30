@@ -1,5 +1,6 @@
 {
-    "name": "Mnist_LeNet",
+    "project": "test",
+    "name": "test",
     "n_gpu": 1,
 
     "arch": {
@@ -7,19 +8,20 @@
         "args": {}
     },
     "data_loader": {
-        "type": "ACIDDataLoader",
+        "type": "re10k_DataLoader",
         "args":{
             "data_dir": "../../../disk2/icchiu",
-            "batch_size": 4,
+            "batch_size": 16,
             "shuffle": true,
-            "validation_split": 0.1,
-            "num_workers": 2
+            "validation_split": 0,
+            "num_workers": 0,
+            "max_interval": 5
         }
     },
     "optimizer": {
         "type": "Adam",
         "args":{
-            "lr": 0.001,
+            "lr": 0.01,
             "weight_decay": 0,
             "amsgrad": true
         }
@@ -36,15 +38,18 @@
         }
     },
     "trainer": {
-        "epochs": 100,
+        "epochs": 500,
 
         "save_dir": "saved/",
-        "save_period": 1,
+        "save_period": 50,   
         "verbosity": 2,
         
         "monitor": "min val_loss",
         "early_stop": 10,
 
         "tensorboard": true
+    },
+    "args":{
+        "do_epipolar": false
     }
 }

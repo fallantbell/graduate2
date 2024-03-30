@@ -1,0 +1,12 @@
+
+
+# 基本的 posed guided diffusion
+
+CUDA_VISIBLE_DEVICES=2,3 \
+python train.py -c config/config.json
+
+
+# 加入 masked autoencoder 的 posed guided diffusion
+
+CUDA_VISIBLE_DEVICES=1,2,3,4 \
+python train.py -c config/masked_epipolar_config.json -r saved/models/masked_epipolar.ckpt

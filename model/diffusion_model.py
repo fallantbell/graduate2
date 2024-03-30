@@ -82,18 +82,40 @@ def normalize_to_neg_one_to_one(img):
 def unnormalize_to_zero_to_one(t):
     return (t + 1) * 0.5
 
+
 # small helper modules
+
+class DoubleConv(nn.Module):
+    """(convolution => [BN] => ReLU) * 2"""
+
+    def __init__(self, in_channels, out_channels, mid_channels=None):
+        super().__init__()
+        if not mid_channels:
+            mid_channels = out_channels
+        self.double_conv = nn.Sequential(
+            nn.Conv2d(in_channels, mid_channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(mid_channels),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(mid_channels, out_channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True)
+        )
+
+    def forward(self, x):
+        return self.double_conv(x)
 
 def Upsample(dim, dim_out = None):
     return nn.Sequential(
         nn.Upsample(scale_factor = 2, mode = 'nearest'),
-        nn.Conv2d(dim, default(dim_out, dim), 3, padding = 1)
+        # nn.Conv2d(dim, default(dim_out, dim), 3, padding = 1),
+        DoubleConv(dim, default(dim_out, dim),dim//2),
     )
 
 def Downsample(dim, dim_out = None):
     return nn.Sequential(
         Rearrange('b c (h p1) (w p2) -> b (c p1 p2) h w', p1 = 2, p2 = 2),
-        nn.Conv2d(dim * 4, default(dim_out, dim), 1)
+        # nn.Conv2d(dim * 4, default(dim_out, dim), 1),
+        DoubleConv(dim * 4, default(dim_out, dim)),
     )
 
 class RMSNorm(nn.Module):
@@ -229,6 +251,426 @@ class LinearAttention(nn.Module):
         out = rearrange(out, 'b h c (x y) -> b (h c) x y', h = self.heads, x = h, y = w)
         return self.to_out(out)
 
+class CrossAttention(nn.Module):
+    def __init__(self, dim, heads, dim_head, qkv_bias = True, norm=nn.LayerNorm):
+        super().__init__()
+
+        self.scale = dim_head ** -0.5
+
+        self.heads = heads
+        self.dim_head = dim_head
+
+        self.to_q = nn.Sequential(norm(dim), nn.Linear(dim, heads * dim_head, bias=qkv_bias))
+        self.to_k = nn.Sequential(norm(dim), nn.Linear(dim, heads * dim_head, bias=qkv_bias))
+        self.to_v = nn.Sequential(norm(dim), nn.Linear(dim, heads * dim_head, bias=qkv_bias))
+
+        self.proj = nn.Linear(heads * dim_head, dim)
+        self.prenorm = norm(dim)
+        self.mlp = nn.Sequential(nn.Linear(dim, 2 * dim), nn.GELU(), nn.Linear(2 * dim, dim))
+        self.postnorm = norm(dim)
+
+    def forward(self, q, k, v, skip=None):
+        """
+        q: (b d H W)
+        k: (b d h w)
+        v: (b d h w)
+        """
+        _, _, _, H, W = q.shape
+
+        # Move feature dim to last for multi-head proj
+        q = rearrange(q, 'b d H W -> b (H W) d')
+        k = rearrange(k, 'b d h w -> b (h w) d')
+        v = rearrange(v, 'b d h w -> b (h w) d')
+
+        # Project with multiple heads
+        q = self.to_q(q)                                # b (n H W) (heads dim_head)
+        k = self.to_k(k)                                # b (n h w) (heads dim_head)
+        v = self.to_v(v)                                # b (n h w) (heads dim_head)
+
+        # Group the head dim with batch dim
+        q = rearrange(q, 'b ... (m d) -> (b m) ... d', m=self.heads, d=self.dim_head)
+        k = rearrange(k, 'b ... (m d) -> (b m) ... d', m=self.heads, d=self.dim_head)
+        v = rearrange(v, 'b ... (m d) -> (b m) ... d', m=self.heads, d=self.dim_head)
+
+        # Dot product attention along cameras
+        dot = self.scale * torch.einsum('b Q d, b K d -> b Q K', q, k)
+        # dot = rearrange(dot, 'b n Q K -> b Q (n K)')
+        att = dot.softmax(dim=-1)
+
+        # Combine values (image level features).
+        a = torch.einsum('b Q K, b K d -> b Q d', att, v)
+        a = rearrange(a, '(b m) ... d -> b ... (m d)', m=self.heads, d=self.dim_head)
+
+        # Combine multiple heads
+        z = self.proj(a)
+
+        # Optional skip connection
+        if skip is not None:
+            z = z + rearrange(skip, 'b d H W -> b (H W) d')
+
+        z = self.prenorm(z)
+        z = z + self.mlp(z)
+        z = self.postnorm(z)
+        z = rearrange(z, 'b (H W) d -> b d H W', H=H, W=W)
+
+        return z
+'''
+class CrossViewAttention(nn.Module):
+    def __init__(
+        self,
+        feat_height: int,
+        feat_width: int,
+        feat_dim: int,
+        dim: int,
+        image_height: int,
+        image_width: int,
+        qkv_bias: bool,
+        heads: int = 4,
+        dim_head: int = 32,
+        no_image_features: bool = False,
+        skip: bool = True,
+    ):
+        super().__init__()
+
+        # 1 1 3 h w
+        image_plane = generate_grid(feat_height, feat_width)[None]
+        image_plane[:, :, 0] *= image_width
+        image_plane[:, :, 1] *= image_height
+
+        self.register_buffer('image_plane', image_plane, persistent=False)
+
+        self.feature_linear = nn.Sequential(
+            nn.BatchNorm2d(feat_dim),
+            nn.ReLU(),
+            nn.Conv2d(feat_dim, dim, 1, bias=False))
+
+        if no_image_features:
+            self.feature_proj = None
+        else:
+            self.feature_proj = nn.Sequential(
+                nn.BatchNorm2d(feat_dim),
+                nn.ReLU(),
+                nn.Conv2d(feat_dim, dim, 1, bias=False))
+
+        self.bev_embed = nn.Conv2d(2, dim, 1)
+        self.img_embed = nn.Conv2d(4, dim, 1, bias=False)
+        self.cam_embed = nn.Conv2d(4, dim, 1, bias=False)
+
+        self.cross_attend = CrossAttention(dim, heads, dim_head, qkv_bias)
+        self.skip = skip
+
+    def forward(
+        self,
+        x: torch.FloatTensor,
+        bev: BEVEmbedding,
+        feature: torch.FloatTensor,
+        I_inv: torch.FloatTensor,
+        E_inv: torch.FloatTensor,
+    ):
+        """
+        x: (b, c, H, W)
+        feature: (b, n, dim_in, h, w)
+        I_inv: (b, n, 3, 3)
+        E_inv: (b, n, 4, 4)
+
+        Returns: (b, d, H, W)
+        """
+        b, n, _, _, _ = feature.shape
+
+        pixel = self.image_plane                                                # b n 3 h w
+        _, _, _, h, w = pixel.shape
+
+        c = E_inv[..., -1:]                                                     # b n 4 1
+        c_flat = rearrange(c, 'b n ... -> (b n) ...')[..., None]                # (b n) 4 1 1
+        c_embed = self.cam_embed(c_flat)                                        # (b n) d 1 1
+
+        pixel_flat = rearrange(pixel, '... h w -> ... (h w)')                   # 1 1 3 (h w)
+        cam = I_inv @ pixel_flat                                                # b n 3 (h w)
+        cam = F.pad(cam, (0, 0, 0, 1, 0, 0, 0, 0), value=1)                     # b n 4 (h w)
+        d = E_inv @ cam                                                         # b n 4 (h w)
+        d_flat = rearrange(d, 'b n d (h w) -> (b n) d h w', h=h, w=w)           # (b n) 4 h w
+        d_embed = self.img_embed(d_flat)                                        # (b n) d h w
+
+        img_embed = d_embed - c_embed                                           # (b n) d h w
+        img_embed = img_embed / (img_embed.norm(dim=1, keepdim=True) + 1e-7)    # (b n) d h w
+
+        world = bev.grid[:2]                                                    # 2 H W
+        w_embed = self.bev_embed(world[None])                                   # 1 d H W
+        bev_embed = w_embed - c_embed                                           # (b n) d H W
+        bev_embed = bev_embed / (bev_embed.norm(dim=1, keepdim=True) + 1e-7)    # (b n) d H W
+        query_pos = rearrange(bev_embed, '(b n) ... -> b n ...', b=b, n=n)      # b n d H W
+
+        feature_flat = rearrange(feature, 'b n ... -> (b n) ...')               # (b n) d h w
+
+        if self.feature_proj is not None:
+            key_flat = img_embed + self.feature_proj(feature_flat)              # (b n) d h w
+        else:
+            key_flat = img_embed                                                # (b n) d h w
+
+        val_flat = self.feature_linear(feature_flat)                            # (b n) d h w
+
+        # Expand + refine the BEV embedding
+        query = query_pos + x[:, None]                                          # b n d H W
+        key = rearrange(key_flat, '(b n) ... -> b n ...', b=b, n=n)             # b n d h w
+        val = rearrange(val_flat, '(b n) ... -> b n ...', b=b, n=n)             # b n d h w
+
+        return self.cross_attend(query, key, val, skip=x if self.skip else None)
+    
+'''
+class Epipolar_Attention(nn.Module):
+    def __init__(self, dim, heads, dim_head, do_epipolar, qkv_bias = True, norm=nn.LayerNorm):
+        super().__init__()
+
+        self.scale = dim_head ** -0.5
+
+        self.heads = heads
+        self.dim_head = dim_head
+
+        self.do_epipolar = do_epipolar
+
+        self.to_q = nn.Sequential(norm(dim), nn.Linear(dim, heads * dim_head, bias=qkv_bias))
+        self.to_k = nn.Sequential(norm(dim), nn.Linear(dim, heads * dim_head, bias=qkv_bias))
+        self.to_v = nn.Sequential(norm(dim), nn.Linear(dim, heads * dim_head, bias=qkv_bias))
+
+        self.proj = nn.Linear(heads * dim_head, dim)
+        self.prenorm = norm(dim)
+        self.mlp = nn.Sequential(nn.Linear(dim, 2 * dim), nn.GELU(), nn.Linear(2 * dim, dim))
+        self.postnorm = norm(dim)
+    
+    def get_epipolar(self,b,h,w,k,src_c2w,target_c2w):
+        H = h
+        W = H*16/9  #* 原始圖像為 16:9
+
+        k = k.to(dtype=torch.float32)
+        src_c2w=src_c2w.to(dtype=torch.float32)
+        target_c2w=target_c2w.to(dtype=torch.float32)
+
+        #* unormalize intrinsic 
+
+        k[:,0] = k[:,0]*W
+        k[:,1] = k[:,1]*H
+
+        k[:,0,2] = h/2
+        k[:,1,2] = h/2
+
+        device = k.device
+
+        #* 創建 h*w 的 uv map
+        x_coords, y_coords = torch.meshgrid(torch.arange(h), torch.arange(w))
+        coords_tensor = torch.stack((x_coords.flatten(), y_coords.flatten(), torch.ones_like(x_coords).flatten()), dim=1)
+        coords_tensor[:,[0,1]] = coords_tensor[:,[1,0]]
+        coords_tensor = coords_tensor.to(dtype=torch.float32)
+        coords_tensor = repeat(coords_tensor, 'HW p -> b HW p', b=b)
+
+        x_coords = x_coords.to(device)
+        y_coords = y_coords.to(device)
+        coords_tensor = coords_tensor.to(device)
+
+        k_3x3 = k[:,0:3,0:3]
+        src_c2w_r = src_c2w[:,0:3,0:3]
+        src_c2w_t = src_c2w[:,0:3,3]
+        target_c2w_r = target_c2w[:,0:3,0:3]
+        target_c2w_t = target_c2w[:,0:3,3]
+        target_w2c_r = torch.linalg.inv(target_c2w_r)
+        target_w2c_t = -target_c2w_t
+
+        cx = k_3x3[:,0,2].view(b, 1)
+        cy = k_3x3[:,1,2].view(b, 1)
+        fx = k_3x3[:,0,0].view(b, 1)
+        fy = k_3x3[:,1,1].view(b, 1)
+        coords_tensor[...,0] = (coords_tensor[...,0]-cx)/fx
+        coords_tensor[...,1] = (coords_tensor[...,1]-cy)/fy
+
+        #* 做 H*W 個點的運算
+        coords_tensor = rearrange(coords_tensor, 'b hw p -> b p hw') 
+        point_3d_world = torch.matmul(src_c2w_r,coords_tensor)              #* 相機坐標系 -> 世界座標
+        point_3d_world = point_3d_world + src_c2w_t.unsqueeze(-1)           #* 相機坐標系 -> 世界座標
+        point_2d = torch.matmul(target_w2c_r,point_3d_world)                #* 世界座標 -> 相機座標
+        point_2d = point_2d + target_w2c_t.unsqueeze(-1)                    #* 世界座標 -> 相機座標
+        pi_to_j = torch.matmul(k_3x3,point_2d)                              #* 相機座標 -> 平面座標
+
+        #* 原點的計算
+        oi = torch.zeros(3).to(dtype=torch.float32)
+        oi = repeat(oi, 'p -> b p', b=b)
+        oi = oi.unsqueeze(-1)
+        oi = oi.to(device)
+        point_3d_world = torch.matmul(src_c2w_r,oi)
+        point_3d_world = point_3d_world + src_c2w_t.unsqueeze(-1)  
+        point_2d = torch.matmul(target_w2c_r,point_3d_world)
+        point_2d = point_2d + target_w2c_t.unsqueeze(-1)  
+        oi_to_j = torch.matmul(k_3x3,point_2d)
+        oi_to_j = rearrange(oi_to_j, 'b c p -> b p c') #* (b,3,1) -> (b,1,3)
+
+        #* 除以深度
+        pi_to_j = rearrange(pi_to_j, 'b p hw -> b hw p') 
+        pi_to_j = pi_to_j / pi_to_j[..., -1:]   #* (b,hw,3)
+        oi_to_j = oi_to_j / oi_to_j[..., -1:]   #* (b,1,3)
+
+        # print(f"pi_to_j: {pi_to_j[0,9]}")
+        # print(f"oi_to_j: {oi_to_j[0,0]}")
+
+        #* 計算feature map 每個點到每個 epipolar line 的距離
+        coords_tensor = torch.stack((x_coords.flatten(), y_coords.flatten(), torch.ones_like(x_coords).flatten()), dim=1)
+        coords_tensor[:,[0,1]] = coords_tensor[:,[1,0]]
+        coords_tensor = coords_tensor.to(dtype=torch.float32) # (4096,3)
+        coords_tensor = repeat(coords_tensor, 'HW p -> b HW p', b=b)
+        coords_tensor = coords_tensor.to(device)
+
+        oi_to_pi = pi_to_j - oi_to_j            #* h*w 個 epipolar line (b,hw,3)
+        oi_to_coord = coords_tensor - oi_to_j   #* h*w 個點   (b,hw,3)
+
+        ''''
+            #* 這裡做擴展
+            oi_to_pi    [0,0,0]     ->      oi_to_pi_repeat     [0,0,0]
+                        [1,1,1]                                 [0,0,0]
+                        [2,2,2]                                 [1,1,1]
+                                                                [1,1,1]
+                                                                .
+                                                                .
+                                                                .
+
+            oi_to_coord     [0,0,0]     ->      oi_to_coord_repeat      [0,0,0]
+                            [1,1,1]                                     [1,1,1]
+                            [2,2,2]                                     [2,2,2]
+                                                                        [0,0,0]
+                                                                        .
+                                                                        .
+                                                                        .
+        '''
+        oi_to_pi_repeat = repeat(oi_to_pi, 'b i j -> b i (repeat j)',repeat = h*w)
+        oi_to_pi_repeat = rearrange(oi_to_pi_repeat,"b i (repeat j) -> b (i repeat) j", repeat = h*w)
+        oi_to_coord_repeat = repeat(oi_to_coord, 'b i j -> b (repeat i) j',repeat = h*w)
+
+
+        area = torch.cross(oi_to_pi_repeat,oi_to_coord_repeat,dim=-1)     #* (b,hw*hw,3)
+        area = torch.norm(area,dim=-1 ,p=2)
+        vector_len = torch.norm(oi_to_pi_repeat, dim=-1, p=2)
+        distance = area/vector_len
+        distance = 1 - torch.sigmoid(50*(distance-0.5))
+
+        epipolar_map = rearrange(distance,"b (hw hw2) -> b hw hw2",hw = h*w)
+
+
+        '''
+
+        epipolar_map_batch = []                 #* batch size 個feature map
+        for k in range(b):
+            epipolar_map = []                   #* 所有feature map 點對應的epipolar map
+            for i in range(h*w):
+                one_point_map = []              #* 每個feature map 點對應的epipolar map
+
+                for j in range(h*w):
+                    area = torch.cross(oi_to_coord[k,j],oi_to_pi[k,i])
+                    area = torch.norm(area, p=2)
+                    vector_len = torch.norm(oi_to_pi[k,i], p=2)
+                    distance = area/vector_len
+                    distance = 1 - torch.sigmoid(50*(distance-0.5))
+                    one_point_map.append(distance)
+
+                one_point_map = torch.stack(one_point_map)
+                epipolar_map.append(one_point_map)
+            
+            epipolar_map = torch.stack(epipolar_map)
+            epipolar_map_batch.append(epipolar_map)
+        
+        epipolar_map_batch = torch.stack(epipolar_map_batch)
+        
+
+        m = (pi_to_j[...,1] - oi_to_j[...,1])/(pi_to_j[...,0] - oi_to_j[...,0])
+        bias = oi_to_j[...,1] - m*oi_to_j[...,0]
+
+        x_axis = torch.arange(w).to(dtype=torch.float64).to(device)
+        x_axis = repeat(x_axis, 'w -> b w', b=b)
+        x_axis = x_axis.unsqueeze(1)    #* (b,1,w)
+        m = m.unsqueeze(-1)             #* (b,hw,1)
+        bias = bias.unsqueeze(-1)             #* (b,hw,1)
+        y_value = torch.matmul(m,x_axis) + bias          #* (b,hw,w) 
+        y_value = torch.round(y_value).to(torch.int32)
+        
+        epipolar_map_batch = torch.zeros(b,h*w,h*w).to(dtype=torch.float64)
+
+        for k in range(b):
+            for i in range(h*w):
+                for j in range(w):
+                    if y_value[k,i,j]>= 0 and y_value[k,i,j]<h:
+                        index = (y_value[k,i,j])*w+j
+                        epipolar_map_batch[k,i,index] = 1
+        
+        '''
+
+        return epipolar_map
+
+
+    def forward(self, x, src_encode,intrinsic,c2w):
+        b, c, h, w = x.shape
+
+        '''
+            #! 這裡要做 cross view attention
+            cross_attend = cross_view_attention(x,src_encode,k,w2c)
+
+            #! 這裡要根據 intrinsic 跟 relative extrinsic 得到 epipolar line 的weight map
+            epipolar_map = get_epipolar(k,c2w)
+
+            #! epipolar 加權
+            weighted_attention = cross_attend*epipolar_map
+
+            #! softmax
+            attn = weighted_attentio.softmax(dim = -1)
+
+            #! 乘上 value
+            out = einsum(f"b h i j, b h j d -> b h i d", attn, v)
+        '''
+
+        """
+        q: (b d H W)
+        k: (b d h w)
+        v: (b d h w)
+        """
+        _, _, H, W = x.shape
+
+        # Move feature dim to last for multi-head proj
+        q = rearrange(x, 'b d H W -> b (H W) d')
+        k = rearrange(src_encode, 'b d h w -> b (h w) d')
+        v = rearrange(src_encode, 'b d h w -> b (h w) d')
+
+        # Project with multiple heads
+        q = self.to_q(q)                                # b (n H W) (heads dim_head)
+        k = self.to_k(k)                                # b (n h w) (heads dim_head)
+        v = self.to_v(v)                                # b (n h w) (heads dim_head)
+
+        # Group the head dim with batch dim
+        q = rearrange(q, 'b ... (m d) -> (b m) ... d', m=self.heads, d=self.dim_head)
+        k = rearrange(k, 'b ... (m d) -> (b m) ... d', m=self.heads, d=self.dim_head)
+        v = rearrange(v, 'b ... (m d) -> (b m) ... d', m=self.heads, d=self.dim_head)
+
+        # Dot product attention along cameras
+        #* 一般的 cross attention -> 得到 attention map
+        cross_attend = self.scale * torch.einsum('b Q d, b K d -> b Q K', q, k)
+
+        if self.do_epipolar:
+            #* 得到 epipolar weighted map (B,HW,HW)
+            epipolar_map = self.get_epipolar(b,h,w,intrinsic,c2w[1],c2w[0])
+
+            epipolar_map = repeat(epipolar_map,'b hw hw2 -> (b repeat) hw hw2',repeat = self.heads)
+
+            cross_attend = cross_attend*epipolar_map
+
+        att = cross_attend.softmax(dim=-1)
+
+        # Combine values (image level features).
+        a = torch.einsum('b Q K, b K d -> b Q d', att, v)
+        a = rearrange(a, '(b m) ... d -> b ... (m d)', m=self.heads, d=self.dim_head)
+
+        # Combine multiple heads
+        z = self.proj(a)
+
+        z = self.prenorm(z)
+        z = z + self.mlp(z)
+        z = self.postnorm(z)
+        z = rearrange(z, 'b (H W) d -> b d H W', H=H, W=W)
+
+        return z
+
 class Attention(nn.Module):
     def __init__(
         self,
@@ -285,9 +727,12 @@ class Unet(nn.Module):
         attn_dim_head = 32,
         attn_heads = 4,
         full_attn = None,    # defaults to full attention only for inner most layer
-        flash_attn = False
+        flash_attn = False,
+        do_epipolar = False,
     ):
         super().__init__()
+
+        # self.midas_model = midas_model
 
         # determine dimensions
 
@@ -295,10 +740,13 @@ class Unet(nn.Module):
         self.self_condition = self_condition
         input_channels = channels * (2 if self_condition else 1)
 
+        self.do_epipolar = do_epipolar
+
         init_dim = default(init_dim, dim)
         self.init_conv = nn.Conv2d(input_channels, init_dim, 7, padding = 3)
 
         dims = [init_dim, *map(lambda m: dim * m, dim_mults)]
+        dims = [*map(lambda m: dim * m, dim_mults)]
         in_out = list(zip(dims[:-1], dims[1:]))
 
         block_klass = partial(ResnetBlock, groups = resnet_block_groups)
@@ -337,52 +785,90 @@ class Unet(nn.Module):
 
         FullAttention = partial(Attention, flash = flash_attn)
 
+        self.conv1d_256_512 = nn.Conv2d(256,512,kernel_size=1)
+        self.conv1d_256_1024 = nn.Conv2d(256,1024,kernel_size=1)
+
         # layers
 
         self.downs = nn.ModuleList([])
         self.ups = nn.ModuleList([])
         num_resolutions = len(in_out)
 
+        self.init_res1 = block_klass(dim,dim,time_emb_dim = time_dim)
+        self.init_res2 = block_klass(dim,dim,time_emb_dim = time_dim)
+        self.init_down = Downsample(dim,dim*2)
+
         for ind, ((dim_in, dim_out), layer_full_attn, layer_attn_heads, layer_attn_dim_head) in enumerate(zip(in_out, full_attn, attn_heads, attn_dim_head)):
+            #* (256,512) (512,1024)
             is_last = ind >= (num_resolutions - 1)
 
             attn_klass = FullAttention if layer_full_attn else LinearAttention
+            epipolar_klass = Epipolar_Attention
 
             self.downs.append(nn.ModuleList([
                 block_klass(dim_in, dim_in, time_emb_dim = time_dim),
+                attn_klass(dim_in, dim_head = layer_attn_dim_head, heads = layer_attn_heads),
+                epipolar_klass(dim_in, dim_head = layer_attn_dim_head, heads = layer_attn_heads,do_epipolar=self.do_epipolar),
+
                 block_klass(dim_in, dim_in, time_emb_dim = time_dim),
                 attn_klass(dim_in, dim_head = layer_attn_dim_head, heads = layer_attn_heads),
-                Downsample(dim_in, dim_out) if not is_last else nn.Conv2d(dim_in, dim_out, 3, padding = 1)
+                epipolar_klass(dim_in, dim_head = layer_attn_dim_head, heads = layer_attn_heads,do_epipolar=self.do_epipolar),
+
+                # Downsample(dim_in, dim_out) if not is_last else nn.Conv2d(dim_in, dim_out, 3, padding = 1),
+                Downsample(dim_in, dim_out),
+                attn_klass(dim_out, dim_head = layer_attn_dim_head, heads = layer_attn_heads),
+                epipolar_klass(dim_out, dim_head = layer_attn_dim_head, heads = layer_attn_heads,do_epipolar=self.do_epipolar),
             ]))
 
         mid_dim = dims[-1]
         self.mid_block1 = block_klass(mid_dim, mid_dim, time_emb_dim = time_dim)
-        self.mid_attn = FullAttention(mid_dim, heads = attn_heads[-1], dim_head = attn_dim_head[-1])
+        self.mid_attn1 = FullAttention(mid_dim, heads = attn_heads[-1], dim_head = attn_dim_head[-1])
+        self.mid_epipolar_attn1  = epipolar_klass(mid_dim, dim_head = attn_dim_head[-1], heads = attn_heads[-1],do_epipolar=self.do_epipolar)
+
         self.mid_block2 = block_klass(mid_dim, mid_dim, time_emb_dim = time_dim)
+        self.mid_attn2 = FullAttention(mid_dim, heads = attn_heads[-1], dim_head = attn_dim_head[-1])
+        self.mid_epipolar_attn2  = epipolar_klass(mid_dim, dim_head = attn_dim_head[-1], heads = attn_heads[-1],do_epipolar=self.do_epipolar)
+
+        self.mid_block3 = block_klass(mid_dim, mid_dim, time_emb_dim = time_dim)
+        self.mid_attn3 = FullAttention(mid_dim, heads = attn_heads[-1], dim_head = attn_dim_head[-1])
+        self.mid_epipolar_attn3  = epipolar_klass(mid_dim, dim_head = attn_dim_head[-1], heads = attn_heads[-1],do_epipolar=self.do_epipolar)
 
         for ind, ((dim_in, dim_out), layer_full_attn, layer_attn_heads, layer_attn_dim_head) in enumerate(zip(*map(reversed, (in_out, full_attn, attn_heads, attn_dim_head)))):
             is_last = ind == (len(in_out) - 1)
 
             attn_klass = FullAttention if layer_full_attn else LinearAttention
+            epipolar_klass = Epipolar_Attention
 
             self.ups.append(nn.ModuleList([
-                block_klass(dim_out + dim_in, dim_out, time_emb_dim = time_dim),
-                block_klass(dim_out + dim_in, dim_out, time_emb_dim = time_dim),
-                attn_klass(dim_out, dim_head = layer_attn_dim_head, heads = layer_attn_heads),
-                Upsample(dim_out, dim_in) if not is_last else  nn.Conv2d(dim_out, dim_in, 3, padding = 1)
+                # Upsample(dim_out + dim_out, dim_in) if not is_last else  nn.Conv2d(dim_out + dim_out, dim_in, 3, padding = 1),
+                Upsample(dim_out + dim_out, dim_in),
+                attn_klass(dim_in, dim_head = layer_attn_dim_head, heads = layer_attn_heads),
+                epipolar_klass(dim_in, dim_head = layer_attn_dim_head, heads = layer_attn_heads,do_epipolar=self.do_epipolar),
+
+                block_klass(dim_in, dim_in, time_emb_dim = time_dim),
+                attn_klass(dim_in, dim_head = layer_attn_dim_head, heads = layer_attn_heads),
+                epipolar_klass(dim_in, dim_head = layer_attn_dim_head, heads = layer_attn_heads,do_epipolar=self.do_epipolar),
+
+                block_klass(dim_in,dim_in, time_emb_dim = time_dim),
+                attn_klass(dim_in, dim_head = layer_attn_dim_head, heads = layer_attn_heads),
+                epipolar_klass(dim_in, dim_head = layer_attn_dim_head, heads = layer_attn_heads,do_epipolar=self.do_epipolar),
             ]))
 
         default_out_dim = channels * (1 if not learned_variance else 2)
         self.out_dim = default(out_dim, default_out_dim)
 
-        self.final_res_block = block_klass(dim * 2, dim, time_emb_dim = time_dim)
+        self.final_up = Upsample(dim*4, dim)
+        self.final_res1 = block_klass(dim, dim, time_emb_dim = time_dim)
+        self.final_res2 = block_klass(dim, dim, time_emb_dim = time_dim)
+
         self.final_conv = nn.Conv2d(dim, self.out_dim, 1)
 
     @property
     def downsample_factor(self):
         return 2 ** (len(self.downs) - 1)
 
-    def forward(self, x, time, img_seq, K , w2c , x_self_cond = None):
+    def forward(self, x, time, prev_img, src_l2, src_l3,src_l4, K , c2w, x_self_cond = None):
+
         assert all([divisible_by(d, self.downsample_factor) for d in x.shape[-2:]]), f'your input dimensions {x.shape[-2:]} need to be divisible by {self.downsample_factor}, given the unet'
 
         if self.self_condition:
@@ -394,36 +880,80 @@ class Unet(nn.Module):
 
         t = self.time_mlp(time)
 
+        
+        #* 因為midas 中間層的dimension 跟diffusion 中間層不同，所以用 1d conv 擴展 (暫時)
+        src_l3 = self.conv1d_256_512(src_l3)
+        src_l4 = self.conv1d_256_1024(src_l4)
+
+        src_encode = [src_l2,src_l3,src_l4]   #! 有三個resolution 的source img embedding
+                                            #! 32x32 16x16 8x8
+
         h = []
 
-        for block1, block2, attn, downsample in self.downs:
+        x = self.init_res1(x,t)
+        x = self.init_res2(x,t)
+        x = self.init_down(x)
+        h.append(x)
+
+        iter = 0
+        for block1, attn1, epi1, block2, attn2, epi2, downsample, attn3, epi3 in self.downs:
+            
             x = block1(x, t)
-            h.append(x)
+            x = attn1(x) + x
+            x = epi1(x,src_encode[iter],K,c2w) + x     #!根據 src img 和 camera 參數做 epipolar attention  
+            # h.append(x)
 
             x = block2(x, t)
-            x = attn(x) + x
-            h.append(x)
+            x = attn2(x) + x
+            x = epi2(x,src_encode[iter],K,c2w) + x
+            # h.append(x)
 
+            iter += 1
             x = downsample(x)
+            x = attn3(x) + x
+            x = epi3(x,src_encode[iter],K,c2w) + x
+
+            h.append(x)
 
         x = self.mid_block1(x, t)
-        x = self.mid_attn(x) + x
+        x = self.mid_attn1(x) + x
+        x = self.mid_epipolar_attn1(x,src_encode[iter],K,c2w) + x
+
         x = self.mid_block2(x, t)
+        x = self.mid_attn2(x) + x
+        x = self.mid_epipolar_attn2(x,src_encode[iter],K,c2w) + x
 
-        for block1, block2, attn, upsample in self.ups:
+        x = self.mid_block3(x, t)
+        x = self.mid_attn3(x) + x
+        x = self.mid_epipolar_attn3(x,src_encode[iter],K,c2w) + x
+
+
+        for upsample, attn1, epi1, block1, attn2, epi2, block2, attn3, epi3 in self.ups:
             x = torch.cat((x, h.pop()), dim = 1)
-            x = block1(x, t)
-
-            x = torch.cat((x, h.pop()), dim = 1)
-            x = block2(x, t)
-            x = attn(x) + x
-
             x = upsample(x)
+            iter -= 1
 
-        x = torch.cat((x, r), dim = 1)
+            x = attn1(x) + x
+            x = epi1(x,src_encode[iter],K,c2w) + x
+            x = block1(x)
 
-        x = self.final_res_block(x, t)
-        return self.final_conv(x)
+            x = attn2(x) + x
+            x = epi2(x,src_encode[iter],K,c2w) + x
+            x = block2(x)
+
+            x = attn3(x) + x
+            x = epi3(x,src_encode[iter],K,c2w) + x
+
+
+        x = torch.cat((x, h.pop()), dim = 1)
+
+        x = self.final_up(x)
+        x = self.final_res1(x, t)
+        x = self.final_res2(x, t)
+
+        x = self.final_conv(x)
+
+        return x
 
 # gaussian diffusion trainer class
 
@@ -477,19 +1007,21 @@ class GaussianDiffusion(nn.Module):
         timesteps = 1000,
         sampling_timesteps = None,
         objective = 'pred_noise',
-        beta_schedule = 'sigmoid',
+        beta_schedule = 'cosine',
         schedule_fn_kwargs = dict(),
         ddim_sampling_eta = 0.,
         auto_normalize = True,
         offset_noise_strength = 0.,  # https://www.crosslabs.org/blog/diffusion-with-offset-noise
         min_snr_loss_weight = False, # https://arxiv.org/abs/2303.09556
-        min_snr_gamma = 5
+        min_snr_gamma = 5,
+        # midas_model = None,
     ):
         super().__init__()
         assert not (type(self) == GaussianDiffusion and model.channels != model.out_dim)
         assert not model.random_or_learned_sinusoidal_cond
 
         self.model = model
+        # self.midas_model = midas_model
 
         self.channels = self.model.channels
         self.self_condition = self.model.self_condition
@@ -760,13 +1292,13 @@ class GaussianDiffusion(nn.Module):
             extract(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape) * noise
         )
 
-    def p_losses(self, x_start, t, img_seq, K, w2c, noise = None, offset_noise_strength = None):
+    def p_losses(self, x_start, t, prev_img, src_l2, src_l3,src_l4, K, c2w, noise = None, offset_noise_strength = None):
 
         '''
-            x_start: 要預測的image
-            img_seq: 一連串的image 
+            x_start: 要預測的 target image
+            prev_img: 過去的 source image 
             K: 共同的intrinsic (4x4)
-            w2c: 一連串的 world to camera matrix (4x4)
+            c2w: 兩張圖的 world to camera matrix (4x4)
         '''
 
         b, c, h, w = x_start.shape
@@ -796,8 +1328,15 @@ class GaussianDiffusion(nn.Module):
                 x_self_cond.detach_()
 
         # predict and take gradient step
-
-        model_out = self.model(x, t, x_self_cond, img_seq = img_seq, K = K, w2c = w2c)
+        model_out = self.model(x, t, 
+                                prev_img = prev_img, 
+                                src_l2 = src_l2, 
+                                src_l3 = src_l3,
+                                src_l4 = src_l4,
+                                K = K, 
+                                c2w = c2w,
+                                x_self_cond = x_self_cond,
+                                )
 
         if self.objective == 'pred_noise':
             target = noise
@@ -815,15 +1354,22 @@ class GaussianDiffusion(nn.Module):
         loss = loss * extract(self.loss_weight, t, loss.shape)
         return loss.mean()
 
-    def forward(self, img_seq, K, w2c):
-        time, b, c, h, w, device, img_size, = *img_seq.shape, img.device, self.image_size
+    def forward(self, img_seq, src_l2, src_l3,src_l4, K, c2w):
+        b, time, c, h, w, device = *img_seq.shape, img_seq.device
         # assert h == img_size and w == img_size, f'height and width of image must be {img_size}'
         t = torch.randint(0, self.num_timesteps, (b,), device=device).long()
+
+        img_seq = img_seq.transpose(0,1)
+        c2w = c2w.transpose(0,1)
 
         prev_img = img_seq[0]
         now_img = img_seq[1]
 
-        img = self.normalize(now_img)
-        loss = self.p_losses(img, t, img_seq,K,w2c)
+        # img = self.normalize(now_img)
+        loss = self.p_losses(now_img, t, prev_img, src_l2, src_l3,src_l4,K,c2w)
 
         return loss
+
+
+
+

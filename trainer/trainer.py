@@ -4,13 +4,17 @@ from torchvision.utils import make_grid
 from base import BaseTrainer
 from utils import inf_loop, MetricTracker
 
+import wandb
+from tqdm import tqdm
 
 class Trainer(BaseTrainer):
     """
     Trainer class
     """
     def __init__(self, model, criterion, metric_ftns, optimizer, config, device,
-                 data_loader, valid_data_loader=None, lr_scheduler=None, len_epoch=None):
+                 data_loader, valid_data_loader=None, lr_scheduler=None, len_epoch=None,
+                 midas_model = None,
+                 ):
         super().__init__(model, criterion, metric_ftns, optimizer, config)
         self.config = config
         self.device = device
@@ -22,13 +26,17 @@ class Trainer(BaseTrainer):
             # iteration-based training
             self.data_loader = inf_loop(data_loader)
             self.len_epoch = len_epoch
+
         self.valid_data_loader = valid_data_loader
         self.do_validation = self.valid_data_loader is not None
-        self.lr_scheduler = lr_scheduler
-        self.log_step = int(np.sqrt(data_loader.batch_size))
 
-        self.train_metrics = MetricTracker('loss', *[m.__name__ for m in self.metric_ftns], writer=self.writer)
-        self.valid_metrics = MetricTracker('loss', *[m.__name__ for m in self.metric_ftns], writer=self.writer)
+        self.lr_scheduler = lr_scheduler
+        self.log_step = int(self.len_epoch//100)
+
+        self.midas_model = midas_model
+
+        # self.train_metrics = MetricTracker('loss', *[m.__name__ for m in self.metric_ftns], writer=self.writer)
+        # self.valid_metrics = MetricTracker('loss', *[m.__name__ for m in self.metric_ftns], writer=self.writer)
 
     def _train_epoch(self, epoch):
         """
@@ -38,48 +46,53 @@ class Trainer(BaseTrainer):
         :return: A log that contains average loss and metric in this epoch.
         """
         self.model.train()
-        self.train_metrics.reset()
-        for batch_idx, data in enumerate(self.data_loader):
+        # self.train_metrics.reset()
+        for batch_idx, data in tqdm(enumerate(self.data_loader)):
+            #* img shape (b,2,3,h,w)
+            #* src_img_tensor 是 (b,3,256,256)
+            #* intrinsic 是 (b,4,4) 
+            #* c2w shape (b,2,4,4)
 
             img = data['img'].to(self.device)
-            intrinsics = data['intrinsic'].to(self.device)
-            w2c = data['w2c'].to(self.device)
-
-            img = img.transpose(0,1)
-            intrinsic = intrinsic.transpose(0,1)
-            w2c = w2c.transpose(0,1)
+            src_img_tensor = data['src_img'].to(self.device)
+            intrinsic = data['intrinsics'].to(self.device)
+            c2w = data['c2w'].to(self.device)
 
             self.optimizer.zero_grad()
 
-            output = self.model(img, K = intrinsic, w2c = w2c)
+            with torch.no_grad():
+                #* 這裡用 pretrain 的 midas 對 source img encode
+                #! 因為未知原因 midas model 無法做平行計算，所以放在外面來做
+                src_l2, src_l3,src_l4 = self.midas_model.forward(src_img_tensor)  
 
-            loss = self.criterion(output, target)
+            loss = self.model(img, src_l2, src_l3,src_l4, K = intrinsic, c2w = c2w)
+
+            loss = loss.mean()
             loss.backward()
             self.optimizer.step()
 
-            self.writer.set_step((epoch - 1) * self.len_epoch + batch_idx)
-            self.train_metrics.update('loss', loss.item())
-            for met in self.metric_ftns:
-                self.train_metrics.update(met.__name__, met(output, target))
+            cur_step = (epoch - 1) * self.len_epoch + batch_idx
+
 
             if batch_idx % self.log_step == 0:
-                self.logger.debug('Train Epoch: {} {} Loss: {:.6f}'.format(
+                
+                print('Train Epoch: {} {} Loss: {:.6f}'.format(
                     epoch,
                     self._progress(batch_idx),
                     loss.item()))
-                self.writer.add_image('input', make_grid(data.cpu(), nrow=8, normalize=True))
+                
+                wandb.log({"epoch":epoch,"loss":loss},step = cur_step)
 
             if batch_idx == self.len_epoch:
                 break
-        log = self.train_metrics.result()
 
         if self.do_validation:
             val_log = self._valid_epoch(epoch)
-            log.update(**{'val_'+k : v for k, v in val_log.items()})
 
         if self.lr_scheduler is not None:
             self.lr_scheduler.step()
-        return log
+
+        return 1
 
     def _valid_epoch(self, epoch):
         """

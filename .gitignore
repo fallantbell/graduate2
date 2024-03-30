@@ -112,3 +112,6 @@ datasets/
 __MACOSX/
 
 *.png
+
+weights/
+wandb/

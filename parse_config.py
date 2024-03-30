@@ -28,6 +28,14 @@ class ConfigParser:
         exper_name = self.config['name']
         if run_id is None: # use timestamp as default run-id
             run_id = datetime.now().strftime(r'%m%d_%H%M%S')
+
+        batch = self.config['data_loader']['args']['batch_size']
+        lr = self.config['optimizer']['args']['lr']
+
+        run_id = f"b_{batch}_lr_{lr}"
+        if exper_name == "test":
+            run_id = datetime.now().strftime(r'%m%d_%H%M%S')
+        
         self._save_dir = save_dir / 'models' / exper_name / run_id
         self._log_dir = save_dir / 'log' / exper_name / run_id
 

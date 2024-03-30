@@ -1,5 +1,5 @@
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "9"
+# os.environ["CUDA_VISIBLE_DEVICES"] = "5"
 import argparse
 import collections
 import torch
@@ -8,11 +8,11 @@ import data_loader.data_loaders as module_data
 import model.loss as module_loss
 import model.metric as module_metric
 import model.model as module_arch
-from model.diffusion_model import Unet, GaussianDiffusion
 from parse_config import ConfigParser
 from trainer import Trainer
 from utils import prepare_device
 
+from midas.model_loader import default_models, load_model
 
 # fix random seeds for reproducibility
 SEED = 123
@@ -24,28 +24,45 @@ np.random.seed(SEED)
 def main(config):
     logger = config.get_logger('train')
 
+    model_type = "dpt_swin2_tiny_256"
+    model_weights = default_models[model_type]
+    midas_model, midas_transform, net_w, net_h = load_model("cpu", model_weights, model_type, False, None, False)
+
     # setup data_loader instances
-    train_data_loader = config.init_obj('data_loader', module_data, mode="train")
-    valid_data_loader = config.init_obj('data_loader', module_data, mode="validation")
+    train_data_loader = config.init_obj('data_loader', module_data, mode="train",midas_transform = midas_transform)
+    valid_data_loader = None
+    # valid_data_loader = config.init_obj('data_loader', module_data, mode="validation")
 
     # build model architecture, then print to console
     # model = config.init_obj('arch', module_arch)
 
+    from model.diffusion_model import Unet, GaussianDiffusion
+
+    do_epipolar = config['args']['do_epipolar']
+
     unet_model = Unet(
-        dim = 64,
-        dim_mults = (1, 2, 4, 8)
+        dim = 128,
+        init_dim = 128,
+        dim_mults = (2, 4, 8),
+        channels=3, 
+        out_dim=3,
+        do_epipolar = do_epipolar,
     )
+    
     model = GaussianDiffusion(
         unet_model,
         timesteps = 1000,    # number of steps
-        sampling_timesteps = 100  # ddim sample
+        sampling_timesteps = 50,  # ddim sample
+        beta_schedule = 'cosine',
     )
 
-    logger.info(model)
+    # logger.info(model)
 
     # prepare for (multi-device) GPU training
     device, device_ids = prepare_device(config['n_gpu'])
     model = model.to(device)
+    midas_model = midas_model.to(device)
+
     if len(device_ids) > 1:
         model = torch.nn.DataParallel(model, device_ids=device_ids)
 
@@ -63,7 +80,9 @@ def main(config):
                       device=device,
                       data_loader=train_data_loader,
                       valid_data_loader=valid_data_loader,
-                      lr_scheduler=lr_scheduler)
+                      lr_scheduler=lr_scheduler,
+                      midas_model = midas_model,
+                      )
 
     trainer.train()
 
