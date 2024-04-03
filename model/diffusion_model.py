@@ -1,5 +1,6 @@
 import math
 import copy
+import os
 from pathlib import Path
 from random import random
 from functools import partial
@@ -26,6 +27,8 @@ from ema_pytorch import EMA
 from accelerate import Accelerator
 
 from model.attend import Attend
+from model.vit import ViT
+from model.vit import Vit_recover
 
 
 # constants
@@ -271,16 +274,20 @@ class CrossAttention(nn.Module):
 
     def forward(self, q, k, v, skip=None):
         """
-        q: (b d H W)
-        k: (b d h w)
-        v: (b d h w)
+        # q: (b d H W)
+        # k: (b d h w)
+        # v: (b d h w)
+
+        q: (b (H W) d)
+        k: (b (H W) d)
+        v: (b (H W) d)
         """
-        _, _, _, H, W = q.shape
+        # _, _, _, H, W = q.shape
 
         # Move feature dim to last for multi-head proj
-        q = rearrange(q, 'b d H W -> b (H W) d')
-        k = rearrange(k, 'b d h w -> b (h w) d')
-        v = rearrange(v, 'b d h w -> b (h w) d')
+        # q = rearrange(q, 'b d H W -> b (H W) d')
+        # k = rearrange(k, 'b d h w -> b (h w) d')
+        # v = rearrange(v, 'b d h w -> b (h w) d')
 
         # Project with multiple heads
         q = self.to_q(q)                                # b (n H W) (heads dim_head)
@@ -311,7 +318,7 @@ class CrossAttention(nn.Module):
         z = self.prenorm(z)
         z = z + self.mlp(z)
         z = self.postnorm(z)
-        z = rearrange(z, 'b (H W) d -> b d H W', H=H, W=W)
+        # z = rearrange(z, 'b (H W) d -> b d H W', H=H, W=W)
 
         return z
 '''
@@ -502,8 +509,9 @@ class Epipolar_Attention(nn.Module):
         oi_to_j = rearrange(oi_to_j, 'b c p -> b p c') #* (b,3,1) -> (b,1,3)
 
         #* 除以深度
-        pi_to_j = rearrange(pi_to_j, 'b p hw -> b hw p') 
-        pi_to_j = pi_to_j / pi_to_j[..., -1:]   #* (b,hw,3)
+        pi_to_j_unnormalize = rearrange(pi_to_j, 'b p hw -> b hw p') 
+        pi_to_j = pi_to_j_unnormalize / (pi_to_j_unnormalize[..., -1:] + 1e-6)   #* (b,hw,3)
+        # pi_to_j = pi_to_j_unnormalize / pi_to_j_unnormalize[..., -1:]
         oi_to_j = oi_to_j / oi_to_j[..., -1:]   #* (b,1,3)
 
         # print(f"pi_to_j: {pi_to_j[0,9]}")
@@ -546,62 +554,39 @@ class Epipolar_Attention(nn.Module):
         area = torch.norm(area,dim=-1 ,p=2)
         vector_len = torch.norm(oi_to_pi_repeat, dim=-1, p=2)
         distance = area/vector_len
-        distance = 1 - torch.sigmoid(50*(distance-0.5))
+        distance_weight = 1 - torch.sigmoid(50*(distance-0.05))
 
-        epipolar_map = rearrange(distance,"b (hw hw2) -> b hw hw2",hw = h*w)
+        epipolar_map = rearrange(distance_weight,"b (hw hw2) -> b hw hw2",hw = h*w)
+
+        if (torch.any(torch.isnan(epipolar_map)) or
+            torch.any(torch.isnan(distance)) or
+            torch.any(torch.isnan(distance_weight)) or
+            torch.any(torch.isnan(area)) or
+            torch.any(torch.isnan(vector_len)) or        
+            torch.any(torch.isnan(distance_weight)) or
+            torch.any(torch.isnan(oi_to_pi_repeat)) or
+            torch.any(torch.isnan(oi_to_coord_repeat))):
+            print(f"find nan !!!")
+            print(f"epipolar_map: {torch.any(torch.isnan(epipolar_map))}")
+            print(f"distance_weight: {torch.any(torch.isnan(distance_weight)) }")
+            print(f"distance: {torch.any(torch.isnan(distance)) }")
+            print(f"vector_len: {torch.any(torch.isnan(vector_len)) }")
+            print(f"area: {torch.any(torch.isnan(area)) }")
+            print(f"oi_to_pi_repeat: {torch.any(torch.isnan(oi_to_pi_repeat))}")
+            print(f"oi_to_coord_repeat: {torch.any(torch.isnan(oi_to_coord_repeat))}")
+            print(f"pi_to_j: {torch.any(torch.isnan(pi_to_j))}")
+            print(f"oi_to_j: {torch.any(torch.isnan(oi_to_j))}")
+            print(f"pi_to_j_unnormalize has zero: {torch.any(torch.eq(pi_to_j_unnormalize[...,-1:],0))}")
+            print(" ")
+            print("break !")
+            os._exit(0)
 
 
-        '''
-
-        epipolar_map_batch = []                 #* batch size 個feature map
-        for k in range(b):
-            epipolar_map = []                   #* 所有feature map 點對應的epipolar map
-            for i in range(h*w):
-                one_point_map = []              #* 每個feature map 點對應的epipolar map
-
-                for j in range(h*w):
-                    area = torch.cross(oi_to_coord[k,j],oi_to_pi[k,i])
-                    area = torch.norm(area, p=2)
-                    vector_len = torch.norm(oi_to_pi[k,i], p=2)
-                    distance = area/vector_len
-                    distance = 1 - torch.sigmoid(50*(distance-0.5))
-                    one_point_map.append(distance)
-
-                one_point_map = torch.stack(one_point_map)
-                epipolar_map.append(one_point_map)
-            
-            epipolar_map = torch.stack(epipolar_map)
-            epipolar_map_batch.append(epipolar_map)
-        
-        epipolar_map_batch = torch.stack(epipolar_map_batch)
-        
-
-        m = (pi_to_j[...,1] - oi_to_j[...,1])/(pi_to_j[...,0] - oi_to_j[...,0])
-        bias = oi_to_j[...,1] - m*oi_to_j[...,0]
-
-        x_axis = torch.arange(w).to(dtype=torch.float64).to(device)
-        x_axis = repeat(x_axis, 'w -> b w', b=b)
-        x_axis = x_axis.unsqueeze(1)    #* (b,1,w)
-        m = m.unsqueeze(-1)             #* (b,hw,1)
-        bias = bias.unsqueeze(-1)             #* (b,hw,1)
-        y_value = torch.matmul(m,x_axis) + bias          #* (b,hw,w) 
-        y_value = torch.round(y_value).to(torch.int32)
-        
-        epipolar_map_batch = torch.zeros(b,h*w,h*w).to(dtype=torch.float64)
-
-        for k in range(b):
-            for i in range(h*w):
-                for j in range(w):
-                    if y_value[k,i,j]>= 0 and y_value[k,i,j]<h:
-                        index = (y_value[k,i,j])*w+j
-                        epipolar_map_batch[k,i,index] = 1
-        
-        '''
 
         return epipolar_map
 
 
-    def forward(self, x, src_encode,intrinsic,c2w):
+    def forward(self, x, src_encode,intrinsic = None,c2w = None):
         b, c, h, w = x.shape
 
         '''
@@ -729,6 +714,8 @@ class Unet(nn.Module):
         full_attn = None,    # defaults to full attention only for inner most layer
         flash_attn = False,
         do_epipolar = False,
+        do_mae = False,
+        mask_ratio = 0.5
     ):
         super().__init__()
 
@@ -741,6 +728,9 @@ class Unet(nn.Module):
         input_channels = channels * (2 if self_condition else 1)
 
         self.do_epipolar = do_epipolar
+        self.do_mae = do_mae
+        if self.do_mae:
+            self.mask_ratio = mask_ratio
 
         init_dim = default(init_dim, dim)
         self.init_conv = nn.Conv2d(input_channels, init_dim, 7, padding = 3)
@@ -792,11 +782,14 @@ class Unet(nn.Module):
 
         self.downs = nn.ModuleList([])
         self.ups = nn.ModuleList([])
+        self.mae = nn.ModuleList([])
         num_resolutions = len(in_out)
 
         self.init_res1 = block_klass(dim,dim,time_emb_dim = time_dim)
         self.init_res2 = block_klass(dim,dim,time_emb_dim = time_dim)
         self.init_down = Downsample(dim,dim*2)
+
+        self.imgsize = 32
 
         for ind, ((dim_in, dim_out), layer_full_attn, layer_attn_heads, layer_attn_dim_head) in enumerate(zip(in_out, full_attn, attn_heads, attn_dim_head)):
             #* (256,512) (512,1024)
@@ -804,6 +797,7 @@ class Unet(nn.Module):
 
             attn_klass = FullAttention if layer_full_attn else LinearAttention
             epipolar_klass = Epipolar_Attention
+            cross_klass = CrossAttention
 
             self.downs.append(nn.ModuleList([
                 block_klass(dim_in, dim_in, time_emb_dim = time_dim),
@@ -820,6 +814,32 @@ class Unet(nn.Module):
                 epipolar_klass(dim_out, dim_head = layer_attn_dim_head, heads = layer_attn_heads,do_epipolar=self.do_epipolar),
             ]))
 
+            if self.do_mae:
+                self.mae.append(nn.ModuleList([
+                    ViT(image_size = (self.imgsize//(2**(ind))),
+                        patch_size = (self.imgsize//(2**(ind)))//4,
+                        dim = 1024,
+                        channels = dim_in,
+                        depth = 2,
+                        heads=layer_attn_heads,
+                        dim_head=layer_attn_dim_head,
+                        dropout=0.1,
+                        emb_dropout=0.1,
+                        num_classes=1024,
+                        mlp_dim=1024,
+                    ),
+                    cross_klass(1024, dim_head = layer_attn_dim_head, heads = layer_attn_heads),
+                    cross_klass(1024, dim_head = layer_attn_dim_head, heads = layer_attn_heads),
+                    cross_klass(1024, dim_head = layer_attn_dim_head, heads = layer_attn_heads),
+                    cross_klass(1024, dim_head = layer_attn_dim_head, heads = layer_attn_heads),
+                    Vit_recover(
+                        image_size = (self.imgsize//(2**(ind))),
+                        patch_size = (self.imgsize//(2**(ind)))//4,
+                        dim = 1024,
+                        channels = dim_in,
+                    )
+                ]))
+
         mid_dim = dims[-1]
         self.mid_block1 = block_klass(mid_dim, mid_dim, time_emb_dim = time_dim)
         self.mid_attn1 = FullAttention(mid_dim, heads = attn_heads[-1], dim_head = attn_dim_head[-1])
@@ -828,6 +848,30 @@ class Unet(nn.Module):
         self.mid_block2 = block_klass(mid_dim, mid_dim, time_emb_dim = time_dim)
         self.mid_attn2 = FullAttention(mid_dim, heads = attn_heads[-1], dim_head = attn_dim_head[-1])
         self.mid_epipolar_attn2  = epipolar_klass(mid_dim, dim_head = attn_dim_head[-1], heads = attn_heads[-1],do_epipolar=self.do_epipolar)
+        
+        if self.do_mae:
+            self.midmae_vit = ViT(image_size = (self.imgsize//(2**(ind+1))),
+                                    patch_size = (self.imgsize//(2**(ind+1)))//4,
+                                    dim = 1024,
+                                    channels = mid_dim,
+                                    depth = 2,
+                                    heads=attn_heads[-1],
+                                    dim_head=attn_dim_head[-1],
+                                    dropout=0.1,
+                                    emb_dropout=0.1,
+                                    num_classes=1024,       #* 不重要 沒有要做分類
+                                    mlp_dim=1024,
+                                )
+            self.midmae_cross1  = cross_klass(1024, dim_head = attn_dim_head[-1], heads = attn_heads[-1])
+            self.midmae_attn1 = cross_klass(1024, heads = attn_heads[-1], dim_head = attn_dim_head[-1])
+            self.midmae_cross2  = cross_klass(1024, dim_head = attn_dim_head[-1], heads = attn_heads[-1])
+            self.midmae_attn2 = cross_klass(1024, heads = attn_heads[-1], dim_head = attn_dim_head[-1])
+            self.midmae_recover = Vit_recover(
+                                image_size = (self.imgsize//(2**(ind+1))),
+                                patch_size = (self.imgsize//(2**(ind+1)))//4,
+                                dim = 1024,
+                                channels = mid_dim,
+                            )
 
         self.mid_block3 = block_klass(mid_dim, mid_dim, time_emb_dim = time_dim)
         self.mid_attn3 = FullAttention(mid_dim, heads = attn_heads[-1], dim_head = attn_dim_head[-1])
@@ -852,6 +896,7 @@ class Unet(nn.Module):
                 block_klass(dim_in,dim_in, time_emb_dim = time_dim),
                 attn_klass(dim_in, dim_head = layer_attn_dim_head, heads = layer_attn_heads),
                 epipolar_klass(dim_in, dim_head = layer_attn_dim_head, heads = layer_attn_heads,do_epipolar=self.do_epipolar),
+
             ]))
 
         default_out_dim = channels * (1 if not learned_variance else 2)
@@ -867,7 +912,7 @@ class Unet(nn.Module):
     def downsample_factor(self):
         return 2 ** (len(self.downs) - 1)
 
-    def forward(self, x, time, prev_img, src_l2, src_l3,src_l4, K , c2w, x_self_cond = None):
+    def forward(self, x, time, src_l2, src_l3,src_l4, K , c2w, x_self_cond = None):
 
         assert all([divisible_by(d, self.downsample_factor) for d in x.shape[-2:]]), f'your input dimensions {x.shape[-2:]} need to be divisible by {self.downsample_factor}, given the unet'
 
@@ -908,6 +953,15 @@ class Unet(nn.Module):
             x = epi2(x,src_encode[iter],K,c2w) + x
             # h.append(x)
 
+            if self.do_mae:
+                vit1, maecross1, maeattn1,maecross2,maeattn2,vitrecover = self.mae[iter]
+                src_latent, target_latent = vit1(x,src_encode[iter],self.mask_ratio)
+                x = maecross1(target_latent,src_latent,src_latent)
+                x = maeattn1(x,x,x) + x
+                x = maecross2(x,src_latent,src_latent) + x
+                x = maeattn2(x,x,x) + x
+                x = vitrecover(x)
+
             iter += 1
             x = downsample(x)
             x = attn3(x) + x
@@ -922,6 +976,13 @@ class Unet(nn.Module):
         x = self.mid_block2(x, t)
         x = self.mid_attn2(x) + x
         x = self.mid_epipolar_attn2(x,src_encode[iter],K,c2w) + x
+        if self.do_mae:
+            src_latent, target_latent = self.midmae_vit(x,src_encode[iter],self.mask_ratio)
+            x = self.midmae_cross1(target_latent,src_latent,src_latent)
+            x = self.midmae_attn1(x,x,x) + x
+            x = self.midmae_cross2(x,src_latent,src_latent) + x
+            x = self.midmae_attn2(x,x,x) + x
+            x = self.midmae_recover(x)
 
         x = self.mid_block3(x, t)
         x = self.mid_attn3(x) + x
@@ -1152,8 +1213,15 @@ class GaussianDiffusion(nn.Module):
         posterior_log_variance_clipped = extract(self.posterior_log_variance_clipped, t, x_t.shape)
         return posterior_mean, posterior_variance, posterior_log_variance_clipped
 
-    def model_predictions(self, x, t, x_self_cond = None, clip_x_start = False, rederive_pred_noise = False):
-        model_output = self.model(x, t, x_self_cond)
+    def model_predictions(self, x, t, src_l2, src_l3,src_l4, K, c2w, x_self_cond = None, clip_x_start = False, rederive_pred_noise = False):
+        model_output = self.model(x, t, 
+                                src_l2 = src_l2, 
+                                src_l3 = src_l3,
+                                src_l4 = src_l4,
+                                K = K, 
+                                c2w = c2w,
+                                x_self_cond = x_self_cond,
+                                )
         maybe_clip = partial(torch.clamp, min = -1., max = 1.) if clip_x_start else identity
 
         if self.objective == 'pred_noise':
@@ -1216,14 +1284,16 @@ class GaussianDiffusion(nn.Module):
         return ret
 
     @torch.inference_mode()
-    def ddim_sample(self, shape, return_all_timesteps = False):
+    def ddim_sample(self, shape,img, src_l2, src_l3,src_l4, K, c2w, return_all_timesteps = False):
         batch, device, total_timesteps, sampling_timesteps, eta, objective = shape[0], self.device, self.num_timesteps, self.sampling_timesteps, self.ddim_sampling_eta, self.objective
+
+        c2w = c2w.transpose(0,1)
 
         times = torch.linspace(-1, total_timesteps - 1, steps = sampling_timesteps + 1)   # [-1, 0, 1, 2, ..., T-1] when sampling_timesteps == total_timesteps
         times = list(reversed(times.int().tolist()))
         time_pairs = list(zip(times[:-1], times[1:])) # [(T-1, T-2), (T-2, T-3), ..., (1, 0), (0, -1)]
 
-        img = torch.randn(shape, device = device)
+        # img = torch.randn(shape, device = device)
         imgs = [img]
 
         x_start = None
@@ -1231,7 +1301,7 @@ class GaussianDiffusion(nn.Module):
         for time, time_next in tqdm(time_pairs, desc = 'sampling loop time step'):
             time_cond = torch.full((batch,), time, device = device, dtype = torch.long)
             self_cond = x_start if self.self_condition else None
-            pred_noise, x_start, *_ = self.model_predictions(img, time_cond, self_cond, clip_x_start = True, rederive_pred_noise = True)
+            pred_noise, x_start, *_ = self.model_predictions(img, time_cond, src_l2, src_l3,src_l4, K, c2w, self_cond, clip_x_start = True, rederive_pred_noise = True)
 
             if time_next < 0:
                 img = x_start
@@ -1292,11 +1362,10 @@ class GaussianDiffusion(nn.Module):
             extract(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape) * noise
         )
 
-    def p_losses(self, x_start, t, prev_img, src_l2, src_l3,src_l4, K, c2w, noise = None, offset_noise_strength = None):
+    def p_losses(self, x_start, t, src_l2, src_l3,src_l4, K, c2w, noise = None, offset_noise_strength = None):
 
         '''
             x_start: 要預測的 target image
-            prev_img: 過去的 source image 
             K: 共同的intrinsic (4x4)
             c2w: 兩張圖的 world to camera matrix (4x4)
         '''
@@ -1328,8 +1397,7 @@ class GaussianDiffusion(nn.Module):
                 x_self_cond.detach_()
 
         # predict and take gradient step
-        model_out = self.model(x, t, 
-                                prev_img = prev_img, 
+        model_out = self.model(x, t,
                                 src_l2 = src_l2, 
                                 src_l3 = src_l3,
                                 src_l4 = src_l4,
@@ -1366,7 +1434,7 @@ class GaussianDiffusion(nn.Module):
         now_img = img_seq[1]
 
         # img = self.normalize(now_img)
-        loss = self.p_losses(now_img, t, prev_img, src_l2, src_l3,src_l4,K,c2w)
+        loss = self.p_losses(now_img, t, src_l2, src_l3,src_l4,K,c2w)
 
         return loss
 

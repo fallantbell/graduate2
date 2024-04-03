@@ -51,7 +51,11 @@ class re10k_DataLoader(DataLoader):
     """
     ACID dataloader
     """
-    def __init__(self, data_dir, batch_size, shuffle=True, validation_split=0.0, num_workers=1, mode="train",max_interval = 5,midas_transform = None):
+    def __init__(self, data_dir, batch_size, shuffle=True, 
+                validation_split=0.0, num_workers=1, 
+                mode="train",max_interval = 5,midas_transform = None,
+                infer_len = 20,
+                ):
 
         self.data_dir = data_dir
 
@@ -60,7 +64,7 @@ class re10k_DataLoader(DataLoader):
         elif mode == "validation":
             self.dataset = Re10k_dataset(self.data_dir,"validation")
         else:
-            self.dataset = Re10k_dataset(self.data_dir,"test")
+            self.dataset = Re10k_dataset(self.data_dir,"test",midas_transform = midas_transform,infer_len=infer_len)
         
 
         collate_fn=default_collate

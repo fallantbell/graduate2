@@ -11,7 +11,7 @@ class BaseTrainer:
     """
     def __init__(self, model, criterion, metric_ftns, optimizer, config):
         self.config = config
-        # self.logger = config.get_logger('trainer', config['trainer']['verbosity'])
+        self.logger = config.get_logger('trainer', config['trainer']['verbosity'])
 
         self.model = model
         self.criterion = criterion
@@ -44,11 +44,13 @@ class BaseTrainer:
         # self.writer = TensorboardWriter(config.log_dir, self.logger, cfg_trainer['tensorboard'])
         batch = config['data_loader']['args']['batch_size']
         lr = config['optimizer']['args']['lr']
+        n_gpu = config["n_gpu"]
         wandb.init(project = config['project'], name = f"{config['name']}_b{batch}_lr{lr}")
         wandb.config.update({"epochs":self.epochs,
                                 "optimizer":self.optimizer,
                                 "batch_size":batch,
                                 "lr": lr,
+                                "n_gpu":n_gpu,
                             }
         )
 
@@ -104,6 +106,8 @@ class BaseTrainer:
             #         self.logger.info("Validation performance didn\'t improve for {} epochs. "
             #                          "Training stops.".format(self.early_stop))
             #         break
+            if epoch == 14: #! debug
+                self._save_checkpoint(epoch, save_best=best)
 
             if epoch % self.save_period == 0:
                 self._save_checkpoint(epoch, save_best=best)
@@ -128,7 +132,7 @@ class BaseTrainer:
         }
         filename = str(self.checkpoint_dir / 'checkpoint-epoch{}.pth'.format(epoch))
         torch.save(state, filename)
-        # self.logger.info("Saving checkpoint: {} ...".format(filename))
+        self.logger.info("Saving checkpoint: {} ...".format(filename))
         print("Saving checkpoint: {} ...".format(filename))
         if save_best:
             best_path = str(self.checkpoint_dir / 'model_best.pth')
@@ -143,21 +147,24 @@ class BaseTrainer:
         """
         resume_path = str(resume_path)
         self.logger.info("Loading checkpoint: {} ...".format(resume_path))
+        print("Loading checkpoint: {} ...".format(resume_path))
         checkpoint = torch.load(resume_path)
         self.start_epoch = checkpoint['epoch'] + 1
         self.mnt_best = checkpoint['monitor_best']
 
         # load architecture params from checkpoint.
-        if checkpoint['config']['arch'] != self.config['arch']:
-            self.logger.warning("Warning: Architecture configuration given in config file is different from that of "
-                                "checkpoint. This may yield an exception while state_dict is being loaded.")
+        # if checkpoint['config']['arch'] != self.config['arch']:
+        #     self.logger.warning("Warning: Architecture configuration given in config file is different from that of "
+        #                         "checkpoint. This may yield an exception while state_dict is being loaded.")
         self.model.load_state_dict(checkpoint['state_dict'])
 
         # load optimizer state from checkpoint only when optimizer type is not changed.
-        if checkpoint['config']['optimizer']['type'] != self.config['optimizer']['type']:
-            self.logger.warning("Warning: Optimizer type given in config file is different from that of checkpoint. "
-                                "Optimizer parameters not being resumed.")
-        else:
-            self.optimizer.load_state_dict(checkpoint['optimizer'])
+        # if checkpoint['config']['optimizer']['type'] != self.config['optimizer']['type']:
+        #     self.logger.warning("Warning: Optimizer type given in config file is different from that of checkpoint. "
+        #                         "Optimizer parameters not being resumed.")
+        # else:
+        self.optimizer.load_state_dict(checkpoint['optimizer'])
 
         self.logger.info("Checkpoint loaded. Resume training from epoch {}".format(self.start_epoch))
+
+        print("Checkpoint loaded. Resume training from epoch {}".format(self.start_epoch))

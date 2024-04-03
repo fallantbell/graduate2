@@ -104,6 +104,7 @@ ENV/
 data/
 input/
 saved/
+saved_video/
 datasets/
 
 # editor, os cache directory

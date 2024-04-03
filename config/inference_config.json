@@ -1,0 +1,27 @@
+{
+    "project": "single_image_novelview_synthesis",
+    "name": "re10K_epipolar",
+    "n_gpu": 1,
+
+    "arch": {
+        "type": "UNetModel",
+        "args": {}
+    },
+    "data_loader": {
+        "type": "re10k_DataLoader",
+        "args":{
+            "data_dir": "../../../disk2/icchiu",
+            "batch_size": 16,
+            "shuffle": false,
+            "validation_split": 0,
+            "num_workers": 0,
+            "max_interval": 5
+        }
+    },
+
+    "args":{
+        "do_epipolar": true,
+        "infer_len": 5,
+        "max_interval": 5
+    }
+}

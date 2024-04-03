@@ -81,6 +81,11 @@ class Trainer(BaseTrainer):
                     self._progress(batch_idx),
                     loss.item()))
                 
+                self.logger.info('Train Epoch: {} {} Loss: {:.6f}'.format(
+                    epoch,
+                    self._progress(batch_idx),
+                    loss.item()))
+                
                 wandb.log({"epoch":epoch,"loss":loss},step = cur_step)
 
             if batch_idx == self.len_epoch:
@@ -91,6 +96,7 @@ class Trainer(BaseTrainer):
 
         if self.lr_scheduler is not None:
             self.lr_scheduler.step()
+            wandb.log({"lr":self.optimizer.param_groups[0]['lr']},step = cur_step)
 
         return 1
 

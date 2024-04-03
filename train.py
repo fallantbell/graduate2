@@ -39,6 +39,8 @@ def main(config):
     from model.diffusion_model import Unet, GaussianDiffusion
 
     do_epipolar = config['args']['do_epipolar']
+    do_mae = config['args']['do_mae']
+    mask_ratio = config['args']['mask_ratio']
 
     unet_model = Unet(
         dim = 128,
@@ -47,6 +49,8 @@ def main(config):
         channels=3, 
         out_dim=3,
         do_epipolar = do_epipolar,
+        do_mae = do_mae,
+        mask_ratio = mask_ratio,
     )
     
     model = GaussianDiffusion(

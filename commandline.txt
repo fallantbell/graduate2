@@ -1,9 +1,16 @@
 
 
-# 基本的 posed guided diffusion
+# training
 
-CUDA_VISIBLE_DEVICES=2,3 \
-python train.py -c config/config.json
+CUDA_VISIBLE_DEVICES=7,8 \
+python train.py -c config/config.json \
+-r saved/models/re10K_epipolar_debug_con1/b_64_lr_0.0001/checkpoint-epoch40.pth
+
+# inference
+
+CUDA_VISIBLE_DEVICES=7 \
+python inference.py -c config/inference_config.json \
+-r saved/models/re10K_epipolar_debug_con1/b_64_lr_0.0001/checkpoint-epoch40.pth
 
 
 # 加入 masked autoencoder 的 posed guided diffusion

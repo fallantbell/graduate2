@@ -1,7 +1,7 @@
 {
     "project": "test",
     "name": "test",
-    "n_gpu": 1,
+    "n_gpu": 2,
 
     "arch": {
         "type": "UNetModel",
@@ -11,7 +11,7 @@
         "type": "re10k_DataLoader",
         "args":{
             "data_dir": "../../../disk2/icchiu",
-            "batch_size": 16,
+            "batch_size": 32,
             "shuffle": true,
             "validation_split": 0,
             "num_workers": 0,
@@ -21,7 +21,7 @@
     "optimizer": {
         "type": "Adam",
         "args":{
-            "lr": 0.01,
+            "lr": 0.0001,
             "weight_decay": 0,
             "amsgrad": true
         }
@@ -50,6 +50,7 @@
         "tensorboard": true
     },
     "args":{
-        "do_epipolar": false
+        "do_epipolar": true,
+        "do_mae": true
     }
 }

@@ -3,22 +3,39 @@ import torch.nn as nn
 from einops import einsum, rearrange, repeat
 import torch
 
-a = torch.arange(8).reshape(2,4)
+from midas.model_loader import default_models, load_model
 
-print(a)
+from model.diffusion_model import Unet, GaussianDiffusion
 
-a = rearrange(a,'b (m d) -> (b m) d',m=2)
 
-print(a)
+def get_parameter_number(model):
+    total_num = sum(p.numel() for p in model.parameters())
+    trainable_num = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"total num = {total_num}")
+    print(f"trainable num = {trainable_num}")
 
-a = rearrange(a,'(b m) d -> b (m d)',m=2)
+model_type = "dpt_swin2_tiny_256"
+model_weights = default_models[model_type]
+midas_model, midas_transform, net_w, net_h = load_model("cpu", model_weights, model_type, False, None, False)
 
-print(a)
+unet_model = Unet(
+    dim = 128,
+    init_dim = 128,
+    dim_mults = (2, 4, 8),
+    channels=3, 
+    out_dim=3,
+    do_epipolar = True,
+    do_mae= True,
+)
 
-b = torch.arange(8).reshape(2,2,2)
+model = GaussianDiffusion(
+    unet_model,
+    timesteps = 1000,    # number of steps
+    sampling_timesteps = 50,  # ddim sample
+    beta_schedule = 'cosine',
+)
 
-print(b)
+get_parameter_number(model)
 
-b = repeat(b,'i j k -> (i repeat) j k',repeat = 2)
 
-print(b)
+

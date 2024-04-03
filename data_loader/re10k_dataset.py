@@ -11,8 +11,10 @@ default_transform = transforms.Compose([
 ])
 
 class Re10k_dataset(Dataset):
-    def __init__(self,data_root,mode,max_interval=5,midas_transform = None):
+    def __init__(self,data_root,mode,max_interval=5,midas_transform = None,infer_len = 20):
         assert mode == 'train' or mode == 'test' or mode == 'validation'
+
+        self.mode = mode
 
         self.inform_root = '{}/RealEstate10K/{}'.format(data_root, mode)
         self.image_root = '{}/realestate/{}'.format(data_root, mode)
@@ -21,7 +23,8 @@ class Re10k_dataset(Dataset):
         self.midas_transform = midas_transform
 
         self.max_interval = max_interval   #* 兩張圖片最大的間隔
-
+        
+        self.infer_len = infer_len  #* inference 時要生成的影片長度
 
         self.video_dirs = []
         self.image_dirs = []
@@ -81,18 +84,22 @@ class Re10k_dataset(Dataset):
 
         if len(frame_namelist) <= self.max_interval:
             return None, None, False
+        
+        if self.mode=="test" and len(frame_namelist) < self.infer_len:   #* inference 時影片長度小於要生成的長度
+            return None, None, False
 
 
         #* 隨機取間距
         self.interval_len = np.random.randint(self.max_interval) + 1
-        # print(f"interval len = {self.interval_len}")
 
         #* 隨機取origin frame
         self.frame_idx = np.random.randint(len(frame_namelist)-self.interval_len)
-        # print(f"origin idx = {self.frame_idx}, target idx = {self.frame_idx+self.interval_len}")
 
         image_seq = []
         frame_idx = [self.frame_idx, self.frame_idx+self.interval_len]  #* 兩張圖片, 一個origin 一個target
+
+        if self.mode == "test":     #* 做 inference 取 infer_len 張圖片，用來做比較
+            frame_idx = np.arange(self.infer_len)
 
         cnt = 0
         for idx in frame_idx:
@@ -155,7 +162,9 @@ class Re10k_dataset(Dataset):
 
         c2w_seq = []
         frame_idx = [self.frame_idx, self.frame_idx+self.interval_len]
-        # print(f"inform idx = {frame_idx}")
+        
+        if self.mode == "test":      #* 做 inference 取 infer_len 張圖片，用來做比較
+            frame_idx = np.arange(self.infer_len)
 
         for idx in frame_idx:
             c2w = np.array(frame_list[idx][7:], dtype=float).reshape(3,4)
@@ -192,11 +201,18 @@ class Re10k_dataset(Dataset):
         img, src_img_tensor, good_video = self.get_image(index)
 
         #* video frame 數量 < max interval 
+        #* 或 < inference 的長度
         if good_video == False:
             print(f"false")
             return self.__getitem__(index+1)
 
         intrinsics,c2w = self.get_information(index)
+
+        infer_result = {
+            'img':img,
+            'intrinsics':intrinsics,
+            'c2w': c2w
+        }
 
         result = {
             'img':img,
@@ -205,7 +221,10 @@ class Re10k_dataset(Dataset):
             'c2w': c2w
         }
 
-        return result
+        if self.mode == "train":
+            return result
+        elif self.mode == "test":
+            return infer_result
 
 
 if __name__ == '__main__':
