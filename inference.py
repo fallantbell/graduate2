@@ -44,6 +44,7 @@ def main(config):
     from model.diffusion_model import Unet, GaussianDiffusion
 
     do_epipolar = config['args']['do_epipolar']
+    do_mae = config['args']['do_mae']
 
     unet_model = Unet(
         dim = 128,
@@ -52,6 +53,7 @@ def main(config):
         channels=3, 
         out_dim=3,
         do_epipolar = do_epipolar,
+        do_mae = do_mae,
     )
     
     model = GaussianDiffusion(
@@ -77,6 +79,7 @@ def main(config):
 
     #* inference
     total_video = []
+    gt_total_video = []
     with torch.no_grad():
         for batch_idx, data in tqdm(enumerate(test_data_loader)):
             #* img shape (b,infer_num,3,h,w)
@@ -101,7 +104,7 @@ def main(config):
                 next_frame = i
                 interval_len = np.random.randint(max_interval) + 1
                 prev_frame = max(next_frame-interval_len,0)
-                prev_frame = 0
+                # prev_frame = 0
 
                 #* 過去和要預測影像的 extrinsic
                 new_c2w = []
@@ -123,34 +126,40 @@ def main(config):
 
                 #* output 為下一張影像，shape (b,c,h,w), (0,1)
                 shape = torch.randn(batch_size, 3,64,64).shape
-                img = torch.randn(shape, device = device)
-                output = model.module.ddim_sample(shape,img, src_l2, src_l3, src_l4, K = intrinsic, c2w = new_c2w)
+                xT_noise = torch.randn(shape, device = device)
+                output = model.module.ddim_sample(shape,xT_noise, src_l2, src_l3, src_l4, K = intrinsic, c2w = new_c2w)
                 
                 output = rearrange(output,'b c h w -> b h w c')
                 output_video.append(output.cpu())
             
             output_video_tensor = torch.stack(output_video,dim=1)
             output_video_numpy = (output_video_tensor.clamp(0, 1).numpy() * 255).astype(np.uint8)
-            
+            gt_img_numpy = (img.clamp(0, 1).numpy() * 255).astype(np.uint8)
 
             for i in range(output_video_numpy.shape[0]):
                 one_video = []
+                gt_one_video = []
                 for j in range(output_video_numpy.shape[1]):
                     one_video.append(output_video_numpy[i][j])
+                    gt_one_video.append(gt_img_numpy[i,j])
 
                 total_video.append(one_video)
+                gt_total_video.append(gt_one_video)
 
             if (batch_idx+1)*batch_size > 0:
                 break
 
     for i in range(len(total_video)):
         video_dir = f"saved_video/{config['name']}/{i}"
+        gt_video_dir = f"saved_video/gt/{i}"
         os.makedirs(video_dir,exist_ok=True)
+        os.makedirs(gt_video_dir,exist_ok=True)
         for j in range(len(total_video[i])):
             cv2.imwrite(f'{video_dir}/{j}.png', total_video[i][j])
+            cv2.imwrite(f'{gt_video_dir}/{j}.png', gt_total_video[i][j])
 
-    
-
+    print(f"save video len {infer_len} at saved_video/{config['name']}")
+    print(f"save gt video len {infer_len} at saved_video/gt")
 
 
 if __name__ == '__main__':

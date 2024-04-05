@@ -44,8 +44,14 @@ class BaseTrainer:
         # self.writer = TensorboardWriter(config.log_dir, self.logger, cfg_trainer['tensorboard'])
         batch = config['data_loader']['args']['batch_size']
         lr = config['optimizer']['args']['lr']
+        mask_ratio = config['args']['mask_ratio']
+        do_mae = config['args']['do_mae']
         n_gpu = config["n_gpu"]
-        wandb.init(project = config['project'], name = f"{config['name']}_b{batch}_lr{lr}")
+        
+        if do_mae:
+            wandb.init(project = config['project'], name = f"{config['name']}_b{batch}_lr{lr}_m{mask_ratio}")
+        else:
+            wandb.init(project = config['project'], name = f"{config['name']}_b{batch}_lr{lr}")
         wandb.config.update({"epochs":self.epochs,
                                 "optimizer":self.optimizer,
                                 "batch_size":batch,
@@ -163,7 +169,7 @@ class BaseTrainer:
         #     self.logger.warning("Warning: Optimizer type given in config file is different from that of checkpoint. "
         #                         "Optimizer parameters not being resumed.")
         # else:
-        self.optimizer.load_state_dict(checkpoint['optimizer'])
+        # self.optimizer.load_state_dict(checkpoint['optimizer'])
 
         self.logger.info("Checkpoint loaded. Resume training from epoch {}".format(self.start_epoch))
 

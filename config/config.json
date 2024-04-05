@@ -1,6 +1,6 @@
 {
     "project": "single_image_novelview_synthesis",
-    "name": "re10K_mae",
+    "name": "re10K_epipolar_con3",
     "n_gpu": 2,
 
     "arch": {
@@ -11,7 +11,7 @@
         "type": "re10k_DataLoader",
         "args":{
             "data_dir": "../../../disk2/icchiu",
-            "batch_size": 48,
+            "batch_size": 64,
             "shuffle": true,
             "validation_split": 0,
             "num_workers": 0,
@@ -33,7 +33,7 @@
     "lr_scheduler": {
         "type": "StepLR",
         "args": {
-            "step_size": 50,
+            "step_size": 500,
             "gamma": 0.1
         }
     },
@@ -41,7 +41,7 @@
         "epochs": 500,
 
         "save_dir": "saved/",
-        "save_period": 5,   
+        "save_period": 10,   
         "verbosity": 2,
         
         "monitor": "min val_loss",
@@ -51,7 +51,7 @@
     },
     "args":{
         "do_epipolar": true,
-        "do_mae": true,
-        "mask_ratio": 0.5
+        "do_mae": false,
+        "mask_ratio": 0.25
     }
 }

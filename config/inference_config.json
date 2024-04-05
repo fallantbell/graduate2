@@ -1,6 +1,6 @@
 {
     "project": "single_image_novelview_synthesis",
-    "name": "re10K_epipolar",
+    "name": "re10K_mae",
     "n_gpu": 1,
 
     "arch": {
@@ -21,7 +21,8 @@
 
     "args":{
         "do_epipolar": true,
-        "infer_len": 5,
-        "max_interval": 5
+        "do_mae": true,
+        "infer_len": 10,
+        "max_interval": 3
     }
 }

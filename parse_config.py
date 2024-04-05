@@ -33,6 +33,10 @@ class ConfigParser:
         lr = self.config['optimizer']['args']['lr']
 
         run_id = f"b_{batch}_lr_{lr}"
+        if self.config['args']['do_mae']:
+            m_ratio = self.config['args']['mask_ratio']
+            run_id = f"b_{batch}_lr_{lr}_m{m_ratio}"
+            
         if exper_name == "test":
             run_id = datetime.now().strftime(r'%m%d_%H%M%S')
         

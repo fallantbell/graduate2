@@ -2,18 +2,18 @@
 
 # training
 
-CUDA_VISIBLE_DEVICES=7,8 \
+CUDA_VISIBLE_DEVICES=5,6 \
 python train.py -c config/config.json \
--r saved/models/re10K_epipolar_debug_con1/b_64_lr_0.0001/checkpoint-epoch40.pth
+-r saved/models/re10K_epipolar_debug_con2/b_64_lr_0.0001/checkpoint-epoch240.pth
 
 # inference
 
-CUDA_VISIBLE_DEVICES=7 \
+CUDA_VISIBLE_DEVICES=9 \
 python inference.py -c config/inference_config.json \
--r saved/models/re10K_epipolar_debug_con1/b_64_lr_0.0001/checkpoint-epoch40.pth
+-r saved/models/re10K_mae/b_48_lr_0.0001/checkpoint-epoch175.pth
 
 
-# 加入 masked autoencoder 的 posed guided diffusion
+# calculate
 
-CUDA_VISIBLE_DEVICES=1,2,3,4 \
-python train.py -c config/masked_epipolar_config.json -r saved/models/masked_epipolar.ckpt
+CUDA_VISIBLE_DEVICES=9 \
+python calculate.py > cal_result.txt
