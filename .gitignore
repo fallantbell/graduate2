@@ -117,3 +117,5 @@ __MACOSX/
 
 weights/
 wandb/
+
+config/
