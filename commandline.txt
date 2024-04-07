@@ -2,15 +2,15 @@
 
 # training
 
-CUDA_VISIBLE_DEVICES=5,6 \
+CUDA_VISIBLE_DEVICES=7,8 \
 python train.py -c config/config.json \
--r saved/models/re10K_epipolar_debug_con2/b_64_lr_0.0001/checkpoint-epoch240.pth
+-r saved/models/re10K_mae/b_48_lr_0.0001_m0.25/checkpoint-epoch110.pth
 
 # inference
 
 CUDA_VISIBLE_DEVICES=9 \
 python inference.py -c config/inference_config.json \
--r saved/models/re10K_mae/b_48_lr_0.0001/checkpoint-epoch175.pth
+-r saved/models/re10K_mae/b_48_lr_0.0001_m0.25/checkpoint-epoch110.pth
 
 
 # calculate

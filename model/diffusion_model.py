@@ -1245,8 +1245,8 @@ class GaussianDiffusion(nn.Module):
 
         return ModelPrediction(pred_noise, x_start)
 
-    def p_mean_variance(self, x, t, x_self_cond = None, clip_denoised = True):
-        preds = self.model_predictions(x, t, x_self_cond)
+    def p_mean_variance(self, x, t,src_l2, src_l3,src_l4, K, c2w, x_self_cond = None, clip_denoised = True):
+        preds = self.model_predictions(x, t,src_l2, src_l3,src_l4, K, c2w, x_self_cond)
         x_start = preds.pred_x_start
 
         if clip_denoised:
@@ -1256,26 +1256,31 @@ class GaussianDiffusion(nn.Module):
         return model_mean, posterior_variance, posterior_log_variance, x_start
 
     @torch.inference_mode()
-    def p_sample(self, x, t: int, x_self_cond = None):
+    def p_sample(self, x, t: int,src_l2, src_l3,src_l4, K, c2w, x_self_cond = None,noise = None):
         b, *_, device = *x.shape, self.device
         batched_times = torch.full((b,), t, device = device, dtype = torch.long)
-        model_mean, _, model_log_variance, x_start = self.p_mean_variance(x = x, t = batched_times, x_self_cond = x_self_cond, clip_denoised = True)
-        noise = torch.randn_like(x) if t > 0 else 0. # no noise if t == 0
+        model_mean, _, model_log_variance, x_start = self.p_mean_variance(x, batched_times,src_l2, src_l3,src_l4, K, c2w, x_self_cond = x_self_cond, clip_denoised = True)
+        
+        if noise == None:
+            noise = torch.randn_like(x) if t > 0 else 0. # no noise if t == 0
+
         pred_img = model_mean + (0.5 * model_log_variance).exp() * noise
         return pred_img, x_start
 
     @torch.inference_mode()
-    def p_sample_loop(self, shape, return_all_timesteps = False):
+    def p_sample_loop(self, shape,img, src_l2, src_l3,src_l4, K, c2w, return_all_timesteps = False):
         batch, device = shape[0], self.device
 
-        img = torch.randn(shape, device = device)
+        c2w = c2w.transpose(0,1)
+        # img = torch.randn(shape, device = device)
         imgs = [img]
 
         x_start = None
 
         for t in tqdm(reversed(range(0, self.num_timesteps)), desc = 'sampling loop time step', total = self.num_timesteps):
             self_cond = x_start if self.self_condition else None
-            img, x_start = self.p_sample(img, t, self_cond)
+            
+            img, x_start = self.p_sample(img, t,src_l2, src_l3,src_l4, K, c2w, self_cond)
             imgs.append(img)
 
         ret = img if not return_all_timesteps else torch.stack(imgs, dim = 1)

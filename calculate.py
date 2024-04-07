@@ -12,7 +12,7 @@ default_transform = transforms.Compose([
 
 device = "cuda"
 
-# loss_fn_alex = lpips.LPIPS(net='alex').to(device)
+loss_fn_alex = lpips.LPIPS(net='alex').to(device)
 
 def calc_ssim(img1, img2):
     '''
@@ -38,13 +38,13 @@ def calc_lpips(img1_tensor, img2_tensor):
     img1_tensor = img1_tensor.to(device)
     img2_tensor = img2_tensor.to(device)
 
-    d = torch.rand(5)
-    # d = loss_fn_alex(img1_tensor, img2_tensor)
+    # d = torch.rand(5)
+    d = loss_fn_alex(img1_tensor, img2_tensor)
 
     return d
 
 
-def short_term(pred_folder,gt_folder):
+def short_term(pred_folder,gt_folder,model_type):
 
     total_ssim = []
     total_psnr = []
@@ -74,20 +74,41 @@ def short_term(pred_folder,gt_folder):
         
         pred_img_seq = torch.stack(pred_img_seq,dim=0)
         gt_img_seq = torch.stack(gt_img_seq,dim=0)
-        # lpips_score = calc_lpips(pred_img_seq,gt_img_seq)
-        # total_lpips.append(torch.sum(lpips_score).cpu().numpy())
+        lpips_score = calc_lpips(pred_img_seq,gt_img_seq)
+        total_lpips.append(torch.sum(lpips_score).detach().cpu().numpy())
     
+    print(f"model = {model_type}")
     print(f"ssim score = {sum(total_ssim)/len(total_ssim)}")
     print(f"psnr score = {sum(total_psnr)/len(total_psnr)}")
-    # print(f"lpips score = {sum(total_lpips)/len(total_lpips)}")
+    print(f"lpips score = {sum(total_lpips)/len(total_lpips)}")
+    print("")
 
     
 
 if __name__ == '__main__':
-    gt_folder_path = "saved_video/re10K_epipolar"
-    pred_folder_path = "saved_video/re10K_mae"
+    gt_folder_path = "saved_video/gt"
+    pred_folder_path = "saved_video/re10K_epipolar"
 
-    short_term(pred_folder=pred_folder_path,
-               gt_folder=gt_folder_path
+    short_term( pred_folder=pred_folder_path,
+                gt_folder=gt_folder_path,
+                model_type = pred_folder_path.split('/')[-1]
+               )
+    pred_folder_path = "saved_video/re10K_epipolar_samestarttest"
+
+    short_term( pred_folder=pred_folder_path,
+                gt_folder=gt_folder_path,
+                model_type = pred_folder_path.split('/')[-1]
+               )
+    
+    pred_folder_path = "saved_video/re10K_mae"
+    short_term( pred_folder=pred_folder_path,
+                gt_folder=gt_folder_path,
+                model_type = pred_folder_path.split('/')[-1]
+               )
+    
+    pred_folder_path = "saved_video/re10K_mae025"
+    short_term( pred_folder=pred_folder_path,
+                gt_folder=gt_folder_path,
+                model_type = pred_folder_path.split('/')[-1]
                )
     

@@ -33,6 +33,7 @@ def main(config):
     infer_len = config['args']['infer_len']
     max_interval = config['args']['max_interval']
     batch_size = config['data_loader']['args']['batch_size']
+    same_start = config['args']['same_start']
 
     #* 宣告 test dataloader
     test_data_loader = init_obj(config,'data_loader', module_data, 
@@ -98,6 +99,10 @@ def main(config):
             output_video = []
             output_video.append(img[:,0]) #* 放入起始image
 
+
+            shape = torch.randn(batch_size, 3,64,64).shape
+            xT_noise = torch.randn(shape, device = device)
+
             for i in range(1,infer_len): #* 跑 infer_len 張圖片
 
                 #* 隨機取過去的影像當作 condition
@@ -124,9 +129,11 @@ def main(config):
 
                 src_l2, src_l3,src_l4 = midas_model.forward(src_img_tensor)
 
-                #* output 為下一張影像，shape (b,c,h,w), (0,1)
-                shape = torch.randn(batch_size, 3,64,64).shape
-                xT_noise = torch.randn(shape, device = device)
+                if same_start != True:
+                    shape = torch.randn(batch_size, 3,64,64).shape
+                    xT_noise = torch.randn(shape, device = device)
+                    
+                #* output 為下一張影像，shape (b,c,h,w), (0,1)  
                 output = model.module.ddim_sample(shape,xT_noise, src_l2, src_l3, src_l4, K = intrinsic, c2w = new_c2w)
                 
                 output = rearrange(output,'b c h w -> b h w c')
