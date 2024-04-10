@@ -10,7 +10,7 @@ python train.py -c config/config.json \
 
 CUDA_VISIBLE_DEVICES=9 \
 python inference.py -c config/inference_config.json \
--r saved/models/re10K_mae/b_48_lr_0.0001_m0.25/checkpoint-epoch110.pth
+-r saved/models/re10K_mae_con1/b_48_lr_0.0001_m0.25/checkpoint-epoch210.pth
 
 
 # calculate

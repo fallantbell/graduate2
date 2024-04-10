@@ -1268,7 +1268,7 @@ class GaussianDiffusion(nn.Module):
         return pred_img, x_start
 
     @torch.inference_mode()
-    def p_sample_loop(self, shape,img, src_l2, src_l3,src_l4, K, c2w, return_all_timesteps = False):
+    def p_sample_loop(self, shape,img, src_l2, src_l3,src_l4, K, c2w,step_noise, return_all_timesteps = False):
         batch, device = shape[0], self.device
 
         c2w = c2w.transpose(0,1)
@@ -1277,10 +1277,17 @@ class GaussianDiffusion(nn.Module):
 
         x_start = None
 
+        # self.num_timesteps -> self.sampling_timesteps
         for t in tqdm(reversed(range(0, self.num_timesteps)), desc = 'sampling loop time step', total = self.num_timesteps):
             self_cond = x_start if self.self_condition else None
-            
-            img, x_start = self.p_sample(img, t,src_l2, src_l3,src_l4, K, c2w, self_cond)
+
+            # noise = step_noise[:,t]
+            # if t < 100:
+            #     noise = None
+            # step_t = arr[t]
+            noise = None
+
+            img, x_start = self.p_sample(img, t,src_l2, src_l3,src_l4, K, c2w, self_cond,noise = noise)
             imgs.append(img)
 
         ret = img if not return_all_timesteps else torch.stack(imgs, dim = 1)

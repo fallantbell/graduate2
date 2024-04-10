@@ -57,7 +57,7 @@ class Re10k_dataset(Dataset):
         self.yscale = yscale
 
 
-        for video_dir in os.listdir(self.image_root):
+        for video_dir in sorted(os.listdir(self.image_root)):
             self.video_dirs.append(video_dir)
 
         print(f"video num: {len(self.video_dirs)}")
@@ -83,26 +83,26 @@ class Re10k_dataset(Dataset):
             frame_namelist.append(file_name)
 
         if len(frame_namelist) <= self.max_interval:
-            return None, None, False
+            return None, None, None, None, None, False
         
         if self.mode=="test" and len(frame_namelist) < self.infer_len:   #* inference 時影片長度小於要生成的長度
-            return None, None, False
+            return None, None, None, None, None, False
 
 
         #* 隨機取間距
-        self.interval_len = np.random.randint(self.max_interval) + 1
+        interval_len = np.random.randint(self.max_interval) + 1
 
         #* 隨機取origin frame
-        self.frame_idx = np.random.randint(len(frame_namelist)-self.interval_len)
+        frame_idx = np.random.randint(len(frame_namelist)-interval_len)
 
         image_seq = []
-        frame_idx = [self.frame_idx, self.frame_idx+self.interval_len]  #* 兩張圖片, 一個origin 一個target
+        frame_idxs = [frame_idx, frame_idx+interval_len]  #* 兩張圖片, 一個origin 一個target
 
         if self.mode == "test":     #* 做 inference 取 infer_len 張圖片，用來做比較
-            frame_idx = np.arange(self.infer_len)
+            frame_idxs = np.arange(self.infer_len)
 
         cnt = 0
-        for idx in frame_idx:
+        for idx in frame_idxs:
             frame_name = frame_namelist[idx]
             img_np = npz_file[frame_name]
             # print(f"img ori shape:{img_np.shape}")
@@ -122,10 +122,10 @@ class Re10k_dataset(Dataset):
         
         image_seq = torch.stack(image_seq)
 
-        return image_seq, src_img_tensor, True
+        return image_seq, src_img_tensor,frame_idx,interval_len,frame_namelist, True
 
 
-    def get_information(self,index):
+    def get_information(self,index,frame_idx,interval_len,frame_namelist):
 
         #* 讀取選定video 的 information txt
         video_idx = index
@@ -143,7 +143,8 @@ class Re10k_dataset(Dataset):
                 frame_informlist = line.split()
                 frame_list.append(frame_informlist)
 
-        fx,fy,cx,cy = np.array(frame_list[self.frame_idx][1:5], dtype=float)
+        #* 同一個video 的intrinsic 都一樣
+        fx,fy,cx,cy = np.array(frame_list[0][1:5], dtype=float)
 
 
         intrinsics = np.array([ [fx,0,cx,0],
@@ -161,16 +162,31 @@ class Re10k_dataset(Dataset):
         #     intrinsics[1, 2] = intrinsics[1, 2] / self.yscale
 
         c2w_seq = []
-        frame_idx = [self.frame_idx, self.frame_idx+self.interval_len]
+        frame_idxs = [frame_idx, frame_idx+interval_len]
         
         if self.mode == "test":      #* 做 inference 取 infer_len 張圖片，用來做比較
-            frame_idx = np.arange(self.infer_len)
+            frame_idxs = np.arange(self.infer_len)
 
-        for idx in frame_idx:
+        # for idx in frame_idxs:
+        #     c2w = np.array(frame_list[idx][7:], dtype=float).reshape(3,4)
+        #     c2w_4x4 = np.eye(4)
+        #     c2w_4x4[:3,:] = c2w
+        #     c2w_seq.append(torch.tensor(c2w_4x4))
+        
+        f_idx = 0
+        for idx in range(len(frame_list)):
+            #* 根據timestamp 與圖片檔名配對，找到對應的extrinsic
+            if frame_list[idx][0] != frame_namelist[frame_idxs[f_idx]].split('.')[0]: 
+                continue
+
             c2w = np.array(frame_list[idx][7:], dtype=float).reshape(3,4)
             c2w_4x4 = np.eye(4)
             c2w_4x4[:3,:] = c2w
             c2w_seq.append(torch.tensor(c2w_4x4))
+
+            f_idx+=1
+            if f_idx == len(frame_idxs):
+                break
 
         c2w_seq = torch.stack(c2w_seq)
 
@@ -198,7 +214,7 @@ class Re10k_dataset(Dataset):
 
     def __getitem__(self,index):
 
-        img, src_img_tensor, good_video = self.get_image(index)
+        img, src_img_tensor, frame_idx,interval_len, frame_namelist, good_video = self.get_image(index)
 
         #* video frame 數量 < max interval 
         #* 或 < inference 的長度
@@ -206,7 +222,7 @@ class Re10k_dataset(Dataset):
             print(f"false")
             return self.__getitem__(index+1)
 
-        intrinsics,c2w = self.get_information(index)
+        intrinsics,c2w = self.get_information(index,frame_idx,interval_len,frame_namelist)
 
         infer_result = {
             'img':img,
@@ -228,19 +244,20 @@ class Re10k_dataset(Dataset):
 
 
 if __name__ == '__main__':
-    test = Re10k_dataset("../../../disk2/icchiu","train")
-    data = test[0]
-    print(data['img'].shape)
-    print(data['intrinsics'])
-    print(data['w2c'][0])
-    print(test.__len__())
-    print(test.interval_len)
+    test = Re10k_dataset("../../dataset","test")
+    print(test.video_dirs[:10])
+    # data = test[0]
+    # print(data['img'].shape)
+    # print(data['intrinsics'])
+    # print(data['w2c'][0])
+    # print(test.__len__())
+    # print(test.interval_len)
 
-    for i in range(data['img'].shape[0]):
-        image = data['img'][i].numpy()
-        image = (image+1)/2
-        image *= 255
-        image = image.astype(np.uint8)
-        image = rearrange(image,"C H W -> H W C")
-        image = Image.fromarray(image)
-        image.save(f"../test_folder/test_{i}.png")
+    # for i in range(data['img'].shape[0]):
+    #     image = data['img'][i].numpy()
+    #     image = (image+1)/2
+    #     image *= 255
+    #     image = image.astype(np.uint8)
+    #     image = rearrange(image,"C H W -> H W C")
+    #     image = Image.fromarray(image)
+    #     image.save(f"../test_folder/test_{i}.png")

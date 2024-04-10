@@ -34,6 +34,20 @@ def main(config):
     max_interval = config['args']['max_interval']
     batch_size = config['data_loader']['args']['batch_size']
     same_start = config['args']['same_start']
+    do_epipolar = config['args']['do_epipolar']
+    do_mae = config['args']['do_mae']
+
+    video_name = config['name']
+    video_name += f"_epoch{config['resume'][-7:-4]}"
+    
+    video_name += f"_inter{max_interval}"
+
+    if same_start:
+        video_name += "_samestart"
+    else:
+        video_name += "_randstart"
+    
+    print(f"video_name = {video_name}")
 
     #* 宣告 test dataloader
     test_data_loader = init_obj(config,'data_loader', module_data, 
@@ -43,9 +57,6 @@ def main(config):
 
     #* 宣告model
     from model.diffusion_model import Unet, GaussianDiffusion
-
-    do_epipolar = config['args']['do_epipolar']
-    do_mae = config['args']['do_mae']
 
     unet_model = Unet(
         dim = 128,
@@ -157,15 +168,20 @@ def main(config):
                 break
 
     for i in range(len(total_video)):
-        video_dir = f"saved_video/{config['name']}/{i}"
+        video_dir = f"saved_video/{video_name}/{i}"
         gt_video_dir = f"saved_video/gt/{i}"
         os.makedirs(video_dir,exist_ok=True)
         os.makedirs(gt_video_dir,exist_ok=True)
         for j in range(len(total_video[i])):
-            cv2.imwrite(f'{video_dir}/{j}.png', total_video[i][j])
-            cv2.imwrite(f'{gt_video_dir}/{j}.png', gt_total_video[i][j])
+            # cv2.imwrite(f'{video_dir}/{j}.png', total_video[i][j])
+            # cv2.imwrite(f'{gt_video_dir}/{j}.png', gt_total_video[i][j])
+            img = Image.fromarray(np.uint8(total_video[i][j]))
+            img.save(f'{video_dir}/{j}.png')
 
-    print(f"save video len {infer_len} at saved_video/{config['name']}")
+            img = Image.fromarray(np.uint8(gt_total_video[i][j]))
+            img.save(f'{gt_video_dir}/{j}.png')
+
+    print(f"save video len {infer_len} at saved_video/{video_name}")
     print(f"save gt video len {infer_len} at saved_video/gt")
 
 

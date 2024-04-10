@@ -49,7 +49,7 @@ def short_term(pred_folder,gt_folder,model_type):
     total_ssim = []
     total_psnr = []
     total_lpips = []
-    for i in range(16):
+    for i in range(32):
         pred_img_seq = []
         gt_img_seq = []
         for j in range(1,5):
@@ -87,28 +87,17 @@ def short_term(pred_folder,gt_folder,model_type):
 
 if __name__ == '__main__':
     gt_folder_path = "saved_video/gt"
-    pred_folder_path = "saved_video/re10K_epipolar"
+    pred_folder_path = "saved_video/re10K_epipolar_1"
 
-    short_term( pred_folder=pred_folder_path,
-                gt_folder=gt_folder_path,
-                model_type = pred_folder_path.split('/')[-1]
-               )
-    pred_folder_path = "saved_video/re10K_epipolar_samestarttest"
+    pred_folder_list = [
+        "saved_video/mae025_epoch210_inter1_randstart",
+        "saved_video/epipolar_epoch470_inter1_samestart"
+    ]
 
-    short_term( pred_folder=pred_folder_path,
-                gt_folder=gt_folder_path,
-                model_type = pred_folder_path.split('/')[-1]
-               )
-    
-    pred_folder_path = "saved_video/re10K_mae"
-    short_term( pred_folder=pred_folder_path,
-                gt_folder=gt_folder_path,
-                model_type = pred_folder_path.split('/')[-1]
-               )
-    
-    pred_folder_path = "saved_video/re10K_mae025"
-    short_term( pred_folder=pred_folder_path,
-                gt_folder=gt_folder_path,
-                model_type = pred_folder_path.split('/')[-1]
-               )
+    for pred_folder_path in pred_folder_list:
+
+        short_term( pred_folder=pred_folder_path,
+                    gt_folder=gt_folder_path,
+                    model_type = pred_folder_path.split('/')[-1]
+                )
     

@@ -20,7 +20,7 @@ def write_video(type,video_num):
 
     # 設定影片編碼器、FPS、影片大小
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    fps = 15
+    fps = 5
     video_writer = cv2.VideoWriter(output_video, fourcc, fps, (width, height))
 
     # 逐一讀取圖片並寫入影片
@@ -36,8 +36,12 @@ def write_video(type,video_num):
 
 if __name__ == '__main__':
 
-    model_type = ['gt','re10K_mae',"re10K_epipolar","re10K_epipolar_samestarttest",'re10K_mae025']
-    video_num = 0
+    model_type = [
+        'gt',
+        'epipolar_epoch470_inter1_samestart',
+        'mae025_epoch210_inter1_randstart',
+                  ]
+    video_num = 25
 
     for type in model_type:
         write_video(type,video_num)
