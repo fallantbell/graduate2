@@ -425,7 +425,7 @@ class CrossViewAttention(nn.Module):
     
 '''
 class Epipolar_Attention(nn.Module):
-    def __init__(self, dim, heads, dim_head, do_epipolar, qkv_bias = True, norm=nn.LayerNorm):
+    def __init__(self, dim, heads, dim_head, do_epipolar,do_bidirectional_epipolar, qkv_bias = True, norm=nn.LayerNorm):
         super().__init__()
 
         self.scale = dim_head ** -0.5
@@ -434,6 +434,7 @@ class Epipolar_Attention(nn.Module):
         self.dim_head = dim_head
 
         self.do_epipolar = do_epipolar
+        self.do_bidirectional_epipolar = do_bidirectional_epipolar
 
         self.to_q = nn.Sequential(norm(dim), nn.Linear(dim, heads * dim_head, bias=qkv_bias))
         self.to_k = nn.Sequential(norm(dim), nn.Linear(dim, heads * dim_head, bias=qkv_bias))
@@ -554,9 +555,19 @@ class Epipolar_Attention(nn.Module):
         area = torch.norm(area,dim=-1 ,p=2)
         vector_len = torch.norm(oi_to_pi_repeat, dim=-1, p=2)
         distance = area/vector_len
+
         distance_weight = 1 - torch.sigmoid(50*(distance-0.05))
 
         epipolar_map = rearrange(distance_weight,"b (hw hw2) -> b hw hw2",hw = h*w)
+
+        #* 如果 max(1-sigmoid) < 0.5 
+        #* => min(distance) > 0.05 
+        #* => 每個點離epipolar line 太遠
+        #* => epipolar line 不在圖中
+        #* weight map 全設為 1 
+        max_values, _ = torch.max(epipolar_map, dim=-1)
+        mask = max_values < 0.5
+        epipolar_map[mask.unsqueeze(-1).expand_as(epipolar_map)] = 1
 
         if (torch.any(torch.isnan(epipolar_map)) or
             torch.any(torch.isnan(distance)) or
@@ -634,9 +645,19 @@ class Epipolar_Attention(nn.Module):
 
         if self.do_epipolar:
             #* 得到 epipolar weighted map (B,HW,HW)
-            epipolar_map = self.get_epipolar(b,h,w,intrinsic,c2w[1],c2w[0])
+            epipolar_map = self.get_epipolar(b,h,w,intrinsic.clone(),c2w[1],c2w[0])
 
             epipolar_map = repeat(epipolar_map,'b hw hw2 -> (b repeat) hw hw2',repeat = self.heads)
+
+            cross_attend = cross_attend*epipolar_map
+        
+        if self.do_bidirectional_epipolar:
+            #* 做反方向的epipolar
+            epipolar_map = self.get_epipolar(b,h,w,intrinsic.clone(),c2w[0],c2w[1])
+
+            epipolar_map_transpose = epipolar_map.permute(0,2,1)
+
+            epipolar_map = repeat(epipolar_map_transpose,'b hw hw2 -> (b repeat) hw hw2',repeat = self.heads)
 
             cross_attend = cross_attend*epipolar_map
 
@@ -714,6 +735,7 @@ class Unet(nn.Module):
         full_attn = None,    # defaults to full attention only for inner most layer
         flash_attn = False,
         do_epipolar = False,
+        do_bidirectional_epipolar = False,
         do_mae = False,
         mask_ratio = 0.5
     ):
@@ -728,6 +750,7 @@ class Unet(nn.Module):
         input_channels = channels * (2 if self_condition else 1)
 
         self.do_epipolar = do_epipolar
+        self.do_bidirectional_epipolar = do_bidirectional_epipolar
         self.do_mae = do_mae
         if self.do_mae:
             self.mask_ratio = mask_ratio
@@ -802,16 +825,16 @@ class Unet(nn.Module):
             self.downs.append(nn.ModuleList([
                 block_klass(dim_in, dim_in, time_emb_dim = time_dim),
                 attn_klass(dim_in, dim_head = layer_attn_dim_head, heads = layer_attn_heads),
-                epipolar_klass(dim_in, dim_head = layer_attn_dim_head, heads = layer_attn_heads,do_epipolar=self.do_epipolar),
+                epipolar_klass(dim_in, dim_head = layer_attn_dim_head, heads = layer_attn_heads,do_epipolar=self.do_epipolar,do_bidirectional_epipolar = self.do_bidirectional_epipolar),
 
                 block_klass(dim_in, dim_in, time_emb_dim = time_dim),
                 attn_klass(dim_in, dim_head = layer_attn_dim_head, heads = layer_attn_heads),
-                epipolar_klass(dim_in, dim_head = layer_attn_dim_head, heads = layer_attn_heads,do_epipolar=self.do_epipolar),
+                epipolar_klass(dim_in, dim_head = layer_attn_dim_head, heads = layer_attn_heads,do_epipolar=self.do_epipolar,do_bidirectional_epipolar = self.do_bidirectional_epipolar),
 
                 # Downsample(dim_in, dim_out) if not is_last else nn.Conv2d(dim_in, dim_out, 3, padding = 1),
                 Downsample(dim_in, dim_out),
                 attn_klass(dim_out, dim_head = layer_attn_dim_head, heads = layer_attn_heads),
-                epipolar_klass(dim_out, dim_head = layer_attn_dim_head, heads = layer_attn_heads,do_epipolar=self.do_epipolar),
+                epipolar_klass(dim_out, dim_head = layer_attn_dim_head, heads = layer_attn_heads,do_epipolar=self.do_epipolar,do_bidirectional_epipolar = self.do_bidirectional_epipolar),
             ]))
 
             if self.do_mae:
@@ -843,11 +866,11 @@ class Unet(nn.Module):
         mid_dim = dims[-1]
         self.mid_block1 = block_klass(mid_dim, mid_dim, time_emb_dim = time_dim)
         self.mid_attn1 = FullAttention(mid_dim, heads = attn_heads[-1], dim_head = attn_dim_head[-1])
-        self.mid_epipolar_attn1  = epipolar_klass(mid_dim, dim_head = attn_dim_head[-1], heads = attn_heads[-1],do_epipolar=self.do_epipolar)
+        self.mid_epipolar_attn1  = epipolar_klass(mid_dim, dim_head = attn_dim_head[-1], heads = attn_heads[-1],do_epipolar=self.do_epipolar,do_bidirectional_epipolar = self.do_bidirectional_epipolar)
 
         self.mid_block2 = block_klass(mid_dim, mid_dim, time_emb_dim = time_dim)
         self.mid_attn2 = FullAttention(mid_dim, heads = attn_heads[-1], dim_head = attn_dim_head[-1])
-        self.mid_epipolar_attn2  = epipolar_klass(mid_dim, dim_head = attn_dim_head[-1], heads = attn_heads[-1],do_epipolar=self.do_epipolar)
+        self.mid_epipolar_attn2  = epipolar_klass(mid_dim, dim_head = attn_dim_head[-1], heads = attn_heads[-1],do_epipolar=self.do_epipolar,do_bidirectional_epipolar = self.do_bidirectional_epipolar)
         
         if self.do_mae:
             self.midmae_vit = ViT(image_size = (self.imgsize//(2**(ind+1))),
@@ -875,7 +898,7 @@ class Unet(nn.Module):
 
         self.mid_block3 = block_klass(mid_dim, mid_dim, time_emb_dim = time_dim)
         self.mid_attn3 = FullAttention(mid_dim, heads = attn_heads[-1], dim_head = attn_dim_head[-1])
-        self.mid_epipolar_attn3  = epipolar_klass(mid_dim, dim_head = attn_dim_head[-1], heads = attn_heads[-1],do_epipolar=self.do_epipolar)
+        self.mid_epipolar_attn3  = epipolar_klass(mid_dim, dim_head = attn_dim_head[-1], heads = attn_heads[-1],do_epipolar=self.do_epipolar,do_bidirectional_epipolar = self.do_bidirectional_epipolar)
 
         for ind, ((dim_in, dim_out), layer_full_attn, layer_attn_heads, layer_attn_dim_head) in enumerate(zip(*map(reversed, (in_out, full_attn, attn_heads, attn_dim_head)))):
             is_last = ind == (len(in_out) - 1)
@@ -887,15 +910,15 @@ class Unet(nn.Module):
                 # Upsample(dim_out + dim_out, dim_in) if not is_last else  nn.Conv2d(dim_out + dim_out, dim_in, 3, padding = 1),
                 Upsample(dim_out + dim_out, dim_in),
                 attn_klass(dim_in, dim_head = layer_attn_dim_head, heads = layer_attn_heads),
-                epipolar_klass(dim_in, dim_head = layer_attn_dim_head, heads = layer_attn_heads,do_epipolar=self.do_epipolar),
+                epipolar_klass(dim_in, dim_head = layer_attn_dim_head, heads = layer_attn_heads,do_epipolar=self.do_epipolar,do_bidirectional_epipolar = self.do_bidirectional_epipolar),
 
                 block_klass(dim_in, dim_in, time_emb_dim = time_dim),
                 attn_klass(dim_in, dim_head = layer_attn_dim_head, heads = layer_attn_heads),
-                epipolar_klass(dim_in, dim_head = layer_attn_dim_head, heads = layer_attn_heads,do_epipolar=self.do_epipolar),
+                epipolar_klass(dim_in, dim_head = layer_attn_dim_head, heads = layer_attn_heads,do_epipolar=self.do_epipolar,do_bidirectional_epipolar = self.do_bidirectional_epipolar),
 
                 block_klass(dim_in,dim_in, time_emb_dim = time_dim),
                 attn_klass(dim_in, dim_head = layer_attn_dim_head, heads = layer_attn_heads),
-                epipolar_klass(dim_in, dim_head = layer_attn_dim_head, heads = layer_attn_heads,do_epipolar=self.do_epipolar),
+                epipolar_klass(dim_in, dim_head = layer_attn_dim_head, heads = layer_attn_heads,do_epipolar=self.do_epipolar,do_bidirectional_epipolar = self.do_bidirectional_epipolar),
 
             ]))
 

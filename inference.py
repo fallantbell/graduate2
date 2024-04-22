@@ -14,6 +14,8 @@ from utils import read_json, write_json
 
 import cv2
 
+from PIL import Image
+
 from midas.model_loader import default_models, load_model
 
 def init_obj(config,name, module, *args, **kwargs):

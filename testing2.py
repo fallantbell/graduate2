@@ -7,39 +7,12 @@ import numpy as np
 
 if __name__ == '__main__':
 
-    test = Re10k_dataset("../../../disk2/icchiu","train")
-    data = test[0]
-    img = data['img']
-    intrinsic = data['intrinsics']
-    w2c = data['w2c']
+    tensor = torch.randn(2, 2, 3)  # 举例：假设形状为 (b, c, w) = (2, 3, 4)
+    threshold = 0.5
 
-    for i in range(2):
-        image = img[i].numpy()
-        image = (image+1)/2
-        image *= 255
-        image = image.astype(np.uint8)
-        image = rearrange(image,"C H W -> H W C")
-        image = Image.fromarray(image)
-        image.save(f"test_folder/test_{i}.png")
+    print(tensor)
 
+    tensor = tensor.permute(0,2,1)
 
-    # unet_model = Unet(
-    #     dim = 128,
-    #     init_dim = 128,
-    #     dim_mults = (2, 4, 8),
-    #     channels=3, 
-    #     out_dim=3,
-    # )
-
-    # device = "cuda"
-
-    # unet_model = unet_model.to(device)
-
-    # input = torch.randn(1, 3, 64, 64).to(device)
-
-    # t = torch.randint(0, 1000, (1,), device=device).long()
-
-    # output = unet_model(input,t,None)
-
-    # print(f"output shape = {output.shape}")
+    print(tensor)
 

@@ -32,6 +32,8 @@ class Trainer(BaseTrainer):
 
         self.lr_scheduler = lr_scheduler
         self.log_step = int(self.len_epoch//100)
+        if self.log_step<=0:
+            self.log_step = 1
 
         self.midas_model = midas_model
 

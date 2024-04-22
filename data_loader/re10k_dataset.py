@@ -5,10 +5,19 @@ from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
 from PIL import Image
 from einops import rearrange
+import re
 
 default_transform = transforms.Compose([
     transforms.ToTensor(),
 ])
+
+def custom_sort(file_name):
+    # 提取文件名中的數字部分
+    num_part = re.findall(r'\d+', file_name)
+    if num_part:
+        return int(num_part[0])  # 將數字部分轉換為整數進行排序
+    else:
+        return file_name
 
 class Re10k_dataset(Dataset):
     def __init__(self,data_root,mode,max_interval=5,midas_transform = None,infer_len = 20):
@@ -18,6 +27,7 @@ class Re10k_dataset(Dataset):
 
         self.inform_root = '{}/RealEstate10K/{}'.format(data_root, mode)
         self.image_root = '{}/realestate/{}'.format(data_root, mode)
+        self.image_root = '{}/realestate_4fps/{}'.format(data_root, mode)
 
         self.transform = default_transform
         self.midas_transform = midas_transform
@@ -77,9 +87,11 @@ class Re10k_dataset(Dataset):
         frame_namelist = []
         video_dir = self.video_dirs[video_idx]
         npz_file_path = f"{self.image_root}/{video_dir}/data.npz"
+        if os.path.isfile(npz_file_path) == False:
+            return None, None, None, None, None, False
         npz_file = np.load(npz_file_path)
 
-        for file_name in sorted(npz_file.files):
+        for file_name in sorted(npz_file.files, key=custom_sort):
             frame_namelist.append(file_name)
 
         if len(frame_namelist) <= self.max_interval:
@@ -176,7 +188,7 @@ class Re10k_dataset(Dataset):
         f_idx = 0
         for idx in range(len(frame_list)):
             #* 根據timestamp 與圖片檔名配對，找到對應的extrinsic
-            if frame_list[idx][0] != frame_namelist[frame_idxs[f_idx]].split('.')[0]: 
+            if int(frame_list[idx][0])//1000 != int(frame_namelist[frame_idxs[f_idx]].split('.')[0])//1000: 
                 continue
 
             c2w = np.array(frame_list[idx][7:], dtype=float).reshape(3,4)
@@ -219,7 +231,7 @@ class Re10k_dataset(Dataset):
         #* video frame 數量 < max interval 
         #* 或 < inference 的長度
         if good_video == False:
-            print(f"false")
+            # print(f"false")
             return self.__getitem__(index+1)
 
         intrinsics,c2w = self.get_information(index,frame_idx,interval_len,frame_namelist)

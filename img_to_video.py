@@ -38,10 +38,10 @@ if __name__ == '__main__':
 
     model_type = [
         'gt',
-        'epipolar_epoch470_inter1_samestart',
-        'mae025_epoch210_inter1_randstart',
+        # 'epipolar_epoch470_inter1_samestart',
+        # 'mae025_epoch210_inter1_randstart',
                   ]
-    video_num = 25
+    video_num = 0
 
     for type in model_type:
         write_video(type,video_num)
