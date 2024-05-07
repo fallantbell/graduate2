@@ -1,18 +1,33 @@
 import torch
 import os
-# os.environ["CUDA_VISIBLE_DEVICES"] = "4"
+os.environ["CUDA_VISIBLE_DEVICES"] = "5"
+import sys
 import numpy as np
 import random
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
 from PIL import Image
-from einops import einsum, rearrange, repeat
+from einops import rearrange, repeat
 from data_loader.re10k_dataset import Re10k_dataset
+import torch.nn.functional as F
+import torchvision.transforms as T
 
 import cv2
 
-u = 51
-v = 28
+u = 50
+v = 118
+
+index = 0
+
+steep = 50
+error_range = 0.5
+
+def normalize(weight):
+    min_val = weight.min()
+    max_val = weight.max()
+    weight = (weight - min_val) / (max_val - min_val)
+
+    return weight
 
 def get_epipolar_tensor(b,h,w,k,src_c2w,target_c2w):
     H = h
@@ -21,10 +36,6 @@ def get_epipolar_tensor(b,h,w,k,src_c2w,target_c2w):
     k = k.to(dtype=torch.float32)
     src_c2w=src_c2w.to(dtype=torch.float32)
     target_c2w=target_c2w.to(dtype=torch.float32)
-
-    k = k.unsqueeze(0)
-    src_c2w = src_c2w.unsqueeze(0)
-    target_c2w = target_c2w.unsqueeze(0)
 
     #* unormalize intrinsic 
 
@@ -83,8 +94,9 @@ def get_epipolar_tensor(b,h,w,k,src_c2w,target_c2w):
     oi_to_j = rearrange(oi_to_j, 'b c p -> b p c') #* (b,3,1) -> (b,1,3)
 
     #* 除以深度
-    pi_to_j = rearrange(pi_to_j, 'b p hw -> b hw p') 
-    pi_to_j = pi_to_j / pi_to_j[..., -1:]   #* (b,hw,3)
+    pi_to_j_unnormalize = rearrange(pi_to_j, 'b p hw -> b hw p') 
+    pi_to_j = pi_to_j_unnormalize / (pi_to_j_unnormalize[..., -1:] + 1e-6)   #* (b,hw,3)
+    # pi_to_j = pi_to_j_unnormalize / pi_to_j_unnormalize[..., -1:]
     oi_to_j = oi_to_j / oi_to_j[..., -1:]   #* (b,1,3)
 
     # print(f"pi_to_j: {pi_to_j[0,9]}")
@@ -127,14 +139,25 @@ def get_epipolar_tensor(b,h,w,k,src_c2w,target_c2w):
     area = torch.norm(area,dim=-1 ,p=2)
     vector_len = torch.norm(oi_to_pi_repeat, dim=-1, p=2)
     distance = area/vector_len
-    distance = 1 - torch.sigmoid(50*(distance-0.5))
 
-    epipolar_map = rearrange(distance,"b (hw hw2) -> b hw hw2",hw = h*w)
+    distance_weight = 1 - torch.sigmoid(steep*(distance-error_range)) # 50 0.5
+    # distance_weight = 1 - torch.sigmoid(steep*(distance-0.05*H)) # 50 0.5
 
-    test_map = epipolar_map[0][v*h+u]
-    test_map = rearrange(test_map, '(h w) -> h w',h=64)
-    test_map = (test_map.clamp(0, 1).cpu().numpy() * 255).astype(np.uint8)
-    cv2.imwrite('test_folder/target_epipolar_atten.png', test_map)
+    epipolar_map = rearrange(distance_weight,"b (hw hw2) -> b hw hw2",hw = h*w)
+
+    #* 如果 max(1-sigmoid) < 0.5 
+    #* => min(distance) > 0.05 
+    #* => 每個點離epipolar line 太遠
+    #* => epipolar line 不在圖中
+    #* weight map 全設為 1 
+    max_values, _ = torch.max(epipolar_map, dim=-1)
+    mask = max_values < 0.5
+    epipolar_map[mask.unsqueeze(-1).expand_as(epipolar_map)] = 1
+
+    # test_map = epipolar_map[0][v*h+u]
+    # test_map = rearrange(test_map, '(h w) -> h w',h=128)
+    # test_map = (test_map.clamp(0, 1).cpu().numpy() * 255).astype(np.uint8)
+    # cv2.imwrite('test_folder/target_epipolar_atten.png', test_map)
 
     return epipolar_map
         
@@ -223,23 +246,25 @@ def get_epipolar(src_img,target_img,k,src_c2w,target_c2w):
     point1 = (min_match,int(min_match*m+b))
     point2 = (max_match,int(max_match*m+b))
 
-    color = (0, 0, 255)
-    thickness = 2
-    target_img = (target_img+1)/2
-    target_img = (target_img.permute(1, 2, 0).clamp(0, 1).numpy() * 255).astype(np.uint8)
-    target_img = np.ascontiguousarray(target_img)
-    cv2.line(target_img, point1, point2, color, thickness)
+    # color = (0, 0, 255)
+    # thickness = 2
+    # target_img = (target_img+1)/2
+    # target_img = (target_img.permute(1, 2, 0).clamp(0, 1).numpy() * 255).astype(np.uint8)
+    # target_img = np.ascontiguousarray(target_img)
+    # cv2.line(target_img, point1, point2, color, thickness)
 
-    point = (u,v)
-    src_img = (src_img+1)/2
-    src_img = (src_img.permute(1, 2, 0).clamp(0, 1).numpy() * 255).astype(np.uint8)
-    src_img = np.ascontiguousarray(src_img)
-    cv2.circle(src_img, point, radius=3, color=color, thickness=-1)
+    # point = (u,v)
+    # src_img = (src_img+1)/2
+    # src_img = (src_img.permute(1, 2, 0).clamp(0, 1).numpy() * 255).astype(np.uint8)
+    # src_img = np.ascontiguousarray(src_img)
+    # cv2.circle(src_img, point, radius=3, color=color, thickness=-1)
 
-    cv2.imwrite('test_folder/target_epipolar.png', target_img)
-    cv2.imwrite('test_folder/src_point.png', src_img)
+    # img = Image.fromarray(np.uint8(target_img))
+    # img.save(f'test_folder/target_epipolar{index}.png')
+    # img = Image.fromarray(np.uint8(src_img))
+    # img.save(f'test_folder/src_point.png')
 
-    return 1
+    return point1, point2
 
 if __name__ == '__main__':
 
@@ -248,12 +273,8 @@ if __name__ == '__main__':
     model_weights = default_models[model_type]
     midas_model, midas_transform, net_w, net_h = load_model("cpu", model_weights, model_type, False, None, False)
 
-    test = Re10k_dataset("../../../disk2/icchiu","train",midas_transform = midas_transform)
-    data = test[21]
-    # print(data['img'].shape)
-    # print(data['intrinsics'])
-    # print(data['c2w'][0])
-    # print(data['c2w'][1])
+    test = Re10k_dataset("../dataset","test",midas_transform = midas_transform,do_latent = False)
+    data = test[0] # 150
 
     prev_img = data['img'][0]
     now_img = data['img'][1]
@@ -262,12 +283,251 @@ if __name__ == '__main__':
     prev_c2w = data['c2w'][0]
     now_c2w = data['c2w'][1]
 
-    get_epipolar(prev_img,now_img,k,prev_c2w,now_c2w)
+    # points = []
+    # color_list = [(84,255,159),(0,255,255),(255,255,0),(255,165,0),(4, 48, 255)]
+    # point_list = [(125,72),(124,76),(107,70),(17,51),(4,48)]
+    # for (u2,v2) in point_list:
+    #     u = u2
+    #     v = v2
+    #     prev_img = data['img'][0]
+    #     now_img = data['img'][1]
+    #     k = data['intrinsics']
+    #     k2 = k.clone()
+    #     prev_c2w = data['c2w'][0]
+    #     now_c2w = data['c2w'][1]
+    
+    #     p1,p2 = get_epipolar(now_img,prev_img,k2,prev_c2w,now_c2w)
+
+    #     points.append((p1,p2))
+    
+    # total_img = (now_img+1)/2
+    # total_img = (total_img.permute(1, 2, 0).clamp(0, 1).numpy() * 255).astype(np.uint8)
+    # total_img = np.ascontiguousarray(total_img)
+
+    # for i in range(5):
+    #     target_img = (now_img+1)/2
+    #     target_img = (target_img.permute(1, 2, 0).clamp(0, 1).numpy() * 255).astype(np.uint8)
+    #     target_img = np.ascontiguousarray(target_img)
+    #     color = color_list[i]
+    #     thickness = 1
+    #     cv2.line(target_img, points[i][0], points[i][1], color, thickness)
+    #     cv2.line(total_img, points[i][0], points[i][1], color, thickness)
+
+    #     cv2.line(target_img,(0,60),(60-1,60),(255,255,255),1)
+    #     cv2.line(target_img,(60,0),(60,60-1),(255,255,255),1)
+
+    #     img = Image.fromarray(np.uint8(target_img))
+    #     img.save(f'test_folder/back_epipolars_{i}.png')
+    # img = Image.fromarray(np.uint8(total_img))
+    # img.save(f'test_folder/back_epipolars_all.png')
+
+    # sys.exit()
+    h = 128
 
     device = "cuda"
-    k2 = k2.to(device)
-    prev_c2w = prev_c2w.to(device)
-    now_c2w = now_c2w.to(device)
-    get_epipolar_tensor(1,64,64,k2,prev_c2w,now_c2w)
+    k2 = k.clone()
+    k2 = k2.unsqueeze(0).to(device)
+    prev_c2w = prev_c2w.unsqueeze(0).to(device)
+    now_c2w = now_c2w.unsqueeze(0).to(device)
+    forward_epipolar_map = get_epipolar_tensor(1,h,h,k2.clone(),now_c2w,prev_c2w)
+    forward_epipolar_map = forward_epipolar_map[0]
 
-    
+    backward_epipolar_map_ori = get_epipolar_tensor(1,h,h,k2.clone(),prev_c2w,now_c2w)
+    backward_epipolar_map_transpose = backward_epipolar_map_ori.permute(0,2,1)
+    backward_epipolar_map = backward_epipolar_map_transpose[0]
+    backward_epipolar_map_ori = backward_epipolar_map_ori[0]
+
+    weight_map = torch.ones_like(forward_epipolar_map)
+    weight_map = weight_map
+    weight_map_forward = weight_map * forward_epipolar_map          #* forward epipolar
+    weight_map_backward = weight_map * backward_epipolar_map        #* backward epipolar transpose
+    weight_map_backward_ori = weight_map * backward_epipolar_map_ori    #*  backward epipolar
+    weight_map_bidirection = weight_map_forward * backward_epipolar_map    
+
+    # weight_map_forward = weight_map_forward.softmax(dim=-1)
+    # weight_map_bidirection = weight_map_bidirection.softmax(dim=-1)
+
+    foldername = f"test_folder_steep{steep}_error{error_range}_test"
+    os.makedirs(f"{foldername}",exist_ok=True)
+    for i in range(10):
+        if i!=5:
+            continue
+        u = np.random.randint(h)
+        v = np.random.randint(h)
+        u = (h//10)*i
+        v = u
+        os.makedirs(f"{foldername}/u_{u}_v_{v}",exist_ok=True)
+
+        # src point image
+        color = (0, 0, 255)
+        src_img = now_img
+        point = (u,v)
+        src_img = (src_img+1)/2
+        src_img = (src_img.permute(1, 2, 0).clamp(0, 1).numpy() * 255).astype(np.uint8)
+        src_img = np.ascontiguousarray(src_img)
+        # cv2.circle(src_img, point, radius=2, color=color, thickness=-1)
+        cv2.line(src_img,(0,u),(v-1,u),(255,255,255),1)
+        cv2.line(src_img,(v,0),(v,u-1),(255,255,255),1)
+        src_img = cv2.cvtColor(src_img, cv2.COLOR_RGB2BGR)
+        cv2.imwrite(f'{foldername}/u_{u}_v_{v}/src_point.png', src_img)
+
+        # target image
+        target_img = prev_img
+        target_img = (target_img+1)/2
+        target_img = (target_img.permute(1, 2, 0).clamp(0, 1).numpy() * 255).astype(np.uint8)
+        target_img = np.ascontiguousarray(target_img)
+
+        #* forward
+        weight = weight_map_forward[v*h+u]
+        weight = rearrange(weight, '(h w) -> h w',h=h)
+        weight = normalize(weight)
+        weight = (weight.clamp(0, 1).cpu().numpy() * 255).astype(np.uint8)
+
+        cv2.imwrite(f'{foldername}/u_{u}_v_{v}/forward_epipolar_map.png', weight)
+
+        weight = cv2.merge([weight,weight,weight])
+        forward_result = cv2.addWeighted(target_img, 0.5, weight, 0.5, 0)
+        forward_result = cv2.cvtColor(forward_result, cv2.COLOR_RGB2BGR)
+        cv2.imwrite(f'{foldername}/u_{u}_v_{v}/forward_epipolar.png',forward_result)
+
+        #* backward
+        weight = weight_map_backward[v*h+u]
+        weight = rearrange(weight, '(h w) -> h w',h=h)
+        weight = normalize(weight)
+        weight = (weight.clamp(0, 1).cpu().numpy() * 255).astype(np.uint8)
+
+        #* 找backward epipolar map 中空白區域，隨機取幾個點
+        white_area = np.where(weight)
+        point_num = len(white_area)
+        index = np.random.randint(point_num)
+        p0 = (white_area[0][index],white_area[1][index])
+        index = np.random.randint(point_num)
+        p1 = (white_area[0][index],white_area[1][index])
+        index = np.random.randint(point_num)
+        p2 = (white_area[0][index],white_area[1][index])
+
+        cv2.imwrite(f'{foldername}/u_{u}_v_{v}/backward_epipolar_map.png', weight)
+
+        weight = cv2.merge([weight,weight,weight])
+        backward_result = cv2.addWeighted(target_img, 0.5, weight, 0.5, 0)
+        cv2.circle(backward_result, p0, radius=2, color=(0,255,255), thickness=-1)
+        cv2.circle(backward_result, p1, radius=2, color=(255,0,255), thickness=-1)
+        cv2.circle(backward_result, p2, radius=2, color=(255,255,0), thickness=-1)
+
+        backward_result = cv2.cvtColor(backward_result, cv2.COLOR_RGB2BGR)
+        cv2.imwrite(f'{foldername}/u_{u}_v_{v}/backward_epipolar.png',backward_result)
+
+        #* 將這幾個點反推回 target img 的epipolar line，看有沒有經過給定的點
+        color_list = [(0,255,255),(255,0,255),(255,255,0)]
+        point_list = [p0,p1,p2]
+        total_img = (now_img+1)/2
+        total_img = (total_img.permute(1, 2, 0).clamp(0, 1).numpy() * 255).astype(np.uint8)
+        total_img = np.ascontiguousarray(total_img)
+        idx = 0
+        for (u2,v2) in point_list:
+            u = u2
+            v = v2
+            prev_img = data['img'][0]
+            now_img = data['img'][1]
+            k = data['intrinsics']
+            k2 = k.clone()
+            prev_c2w = data['c2w'][0]
+            now_c2w = data['c2w'][1]
+        
+            p1,p2 = get_epipolar(now_img,prev_img,k2,prev_c2w,now_c2w)
+            
+            target_img = (now_img+1)/2
+            target_img = (target_img.permute(1, 2, 0).clamp(0, 1).numpy() * 255).astype(np.uint8)
+            target_img = np.ascontiguousarray(target_img)
+            color = color_list[idx]
+            idx+=1
+            thickness = 1
+            cv2.line(target_img, p1, p2, color, thickness)
+            cv2.line(total_img, p1, p2, color, thickness)
+
+            cv2.line(target_img,(0,u),(v-1,u),(255,255,255),1)
+            cv2.line(target_img,(v,0),(v,u-1),(255,255,255),1)
+
+            img = Image.fromarray(np.uint8(target_img))
+            img.save(f'{foldername}/back_epipolars_{u2}_{v2}.png')
+        
+        img = Image.fromarray(np.uint8(total_img))
+        img.save(f'{foldername}/back_epipolars_all.png')
+
+        #* bidirection
+        weight_map = weight_map_bidirection[v*h+u]
+        weight = rearrange(weight_map, '(h w) -> h w',h=h)
+        weight = normalize(weight)
+        weight = (weight.clamp(0, 1).cpu().numpy() * 255).astype(np.uint8)
+
+        cv2.imwrite(f'{foldername}/u_{u}_v_{v}/bidirection_epipolar_map.png', weight)
+
+        weight = cv2.merge([weight,weight,weight])
+        bidirection_result = cv2.addWeighted(target_img, 0.5, weight, 0.5, 0)
+        bidirection_result = cv2.cvtColor(bidirection_result, cv2.COLOR_RGB2BGR)
+        cv2.imwrite(f'{foldername}/u_{u}_v_{v}/bidirection_epipolar.png',bidirection_result)
+
+        #* guassion blur 測試
+
+        k = 3
+        weight = rearrange(weight_map, '(h w) -> h w',h=h)
+
+        # kernel_tensor = torch.rand(k,k).to(dtype=torch.float32)
+        # kernel_tensor = kernel_tensor.to(device)
+        # blurred_tensor = F.conv2d(weight.unsqueeze(0).unsqueeze(0), \
+        #                           kernel_tensor.unsqueeze(0).unsqueeze(0), padding=(k-1)//2)
+        # blurred_tensor = blurred_tensor.squeeze()
+        transform1 = T.GaussianBlur(k,1.5)
+        blurred_tensor = transform1(weight.unsqueeze(0).unsqueeze(0))
+        blurred_tensor = blurred_tensor.squeeze()
+
+        weight = blurred_tensor
+        weight = normalize(weight)
+        weight = (weight.clamp(0, 1).cpu().numpy() * 255).astype(np.uint8)
+        cv2.imwrite(f'{foldername}/u_{u}_v_{v}/bidirection_epipolar_map_BLUR{k}.png', weight)
+        weight = cv2.merge([weight,weight,weight])
+        bidirection_result = cv2.addWeighted(target_img, 0.5, weight, 0.5, 0)
+        bidirection_result = cv2.cvtColor(bidirection_result, cv2.COLOR_RGB2BGR)
+        cv2.imwrite(f'{foldername}/u_{u}_v_{v}/bidirection_epipolar_BLUR{k}.png',bidirection_result)
+
+        k = 5
+        weight = rearrange(weight_map, '(h w) -> h w',h=h)
+
+        # kernel_tensor = torch.rand(k,k).to(dtype=torch.float32)
+        # kernel_tensor = kernel_tensor.to(device)
+        # blurred_tensor = F.conv2d(weight.unsqueeze(0).unsqueeze(0), \
+        #                           kernel_tensor.unsqueeze(0).unsqueeze(0), padding=(k-1)//2)
+        # blurred_tensor = blurred_tensor.squeeze()
+        transform1 = T.GaussianBlur(k,1.5)
+        blurred_tensor = transform1(weight.unsqueeze(0).unsqueeze(0))
+        blurred_tensor = blurred_tensor.squeeze()
+
+        weight = blurred_tensor
+        weight = normalize(weight)
+        weight = (weight.clamp(0, 1).cpu().numpy() * 255).astype(np.uint8)
+        cv2.imwrite(f'{foldername}/u_{u}_v_{v}/bidirection_epipolar_map_BLUR{k}.png', weight)
+        weight = cv2.merge([weight,weight,weight])
+        bidirection_result = cv2.addWeighted(target_img, 0.5, weight, 0.5, 0)
+        bidirection_result = cv2.cvtColor(bidirection_result, cv2.COLOR_RGB2BGR)
+        cv2.imwrite(f'{foldername}/u_{u}_v_{v}/bidirection_epipolar_BLUR{k}.png',bidirection_result)
+
+        k = 7
+        weight = rearrange(weight_map, '(h w) -> h w',h=h)
+
+        # kernel_tensor = torch.rand(k,k).to(dtype=torch.float32)
+        # kernel_tensor = kernel_tensor.to(device)
+        # blurred_tensor = F.conv2d(weight.unsqueeze(0).unsqueeze(0), \
+        #                           kernel_tensor.unsqueeze(0).unsqueeze(0), padding=(k-1)//2)
+        # blurred_tensor = blurred_tensor.squeeze()
+        transform1 = T.GaussianBlur(k,1.5)
+        blurred_tensor = transform1(weight.unsqueeze(0).unsqueeze(0))
+        blurred_tensor = blurred_tensor.squeeze()
+
+        weight = blurred_tensor
+        weight = normalize(weight)
+        weight = (weight.clamp(0, 1).cpu().numpy() * 255).astype(np.uint8)
+        cv2.imwrite(f'{foldername}/u_{u}_v_{v}/bidirection_epipolar_map_BLUR{k}.png', weight)
+        weight = cv2.merge([weight,weight,weight])
+        bidirection_result = cv2.addWeighted(target_img, 0.5, weight, 0.5, 0)
+        bidirection_result = cv2.cvtColor(bidirection_result, cv2.COLOR_RGB2BGR)
+        cv2.imwrite(f'{foldername}/u_{u}_v_{v}/bidirection_epipolar_BLUR{k}.png',bidirection_result)

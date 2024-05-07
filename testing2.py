@@ -7,12 +7,12 @@ import numpy as np
 
 if __name__ == '__main__':
 
-    tensor = torch.randn(2, 2, 3)  # 举例：假设形状为 (b, c, w) = (2, 3, 4)
-    threshold = 0.5
+    # 創建一個 (h, w) 的 NumPy 數組
+    array = np.array([[0, 1, 0],
+                    [1, 0, 1],
+                    [0, 1, 1]])
 
-    print(tensor)
+    # 使用 numpy.where 找到數組中等於 1 的索引
+    indices = np.where(array == 1)
 
-    tensor = tensor.permute(0,2,1)
-
-    print(tensor)
-
+    print(indices)

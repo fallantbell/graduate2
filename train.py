@@ -24,42 +24,69 @@ np.random.seed(SEED)
 def main(config):
     logger = config.get_logger('train')
 
-    model_type = "dpt_swin2_tiny_256"
-    model_weights = default_models[model_type]
-    midas_model, midas_transform, net_w, net_h = load_model("cpu", model_weights, model_type, False, None, False)
-
-    # setup data_loader instances
-    train_data_loader = config.init_obj('data_loader', module_data, mode="train",midas_transform = midas_transform)
-    valid_data_loader = None
-    # valid_data_loader = config.init_obj('data_loader', module_data, mode="validation")
-
-    # build model architecture, then print to console
-    # model = config.init_obj('arch', module_arch)
-
     from model.diffusion_model import Unet, GaussianDiffusion
 
     do_epipolar = config['args']['do_epipolar']
     do_bidirectional_epipolar = config['args']['do_bidirectional_epipolar']
     do_mae = config['args']['do_mae']
+    do_latent = config['args']['do_latent']
+    big_unet = config['args']['big_unet']
     mask_ratio = config['args']['mask_ratio']
 
-    unet_model = Unet(
-        dim = 128,
-        init_dim = 128,
-        dim_mults = (2, 4, 8),
-        channels=3, 
-        out_dim=3,
-        do_epipolar = do_epipolar,
-        do_bidirectional_epipolar = do_bidirectional_epipolar,
-        do_mae = do_mae,
-        mask_ratio = mask_ratio,
-    )
+    if big_unet:
+        #* 使用 512x512 image 做midas 
+        model_type = "dpt_beit_large_512"
+    else:
+        model_type = "dpt_swin2_tiny_256"
+
+    model_weights = default_models[model_type]
+    midas_model, midas_transform, net_w, net_h = load_model("cpu", model_weights, model_type, False, None, False)
+
+    # setup data_loader instances
+    train_data_loader = config.init_obj('data_loader', module_data, mode="train",
+                                        midas_transform = midas_transform,
+                                        do_latent = do_latent,
+                                        )
+    valid_data_loader = None
+
+    if big_unet:
+        dimmults = (1,2,4,8)
+    else:
+        dimmults = (2,4,8)
+
+    if do_latent:
+        #* latent shape 為 (4,64,64)
+        unet_model = Unet(
+            dim = 128,
+            init_dim = 128,
+            dim_mults = dimmults,
+            channels=4, 
+            out_dim=4,
+            do_epipolar = do_epipolar,
+            do_bidirectional_epipolar = do_bidirectional_epipolar,
+            do_mae = do_mae,
+            mask_ratio = mask_ratio,
+        )
+      
+    else:
+      unet_model = Unet(
+          dim = 128,
+          init_dim = 128,
+          dim_mults = dimmults,
+          channels=3, 
+          out_dim=3,
+          do_epipolar = do_epipolar,
+          do_bidirectional_epipolar = do_bidirectional_epipolar,
+          do_mae = do_mae,
+          mask_ratio = mask_ratio,
+      )
     
     model = GaussianDiffusion(
         unet_model,
         timesteps = 1000,    # number of steps
         sampling_timesteps = 50,  # ddim sample
         beta_schedule = 'cosine',
+        do_latent = do_latent,
     )
 
     # logger.info(model)

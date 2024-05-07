@@ -37,6 +37,7 @@ def main(config):
     batch_size = config['data_loader']['args']['batch_size']
     same_start = config['args']['same_start']
     do_epipolar = config['args']['do_epipolar']
+    do_bidirectional_epipolar = config['args']['do_bidirectional_epipolar']
     do_mae = config['args']['do_mae']
 
     video_name = config['name']
@@ -67,6 +68,7 @@ def main(config):
         channels=3, 
         out_dim=3,
         do_epipolar = do_epipolar,
+        do_bidirectional_epipolar = do_bidirectional_epipolar,
         do_mae = do_mae,
     )
     

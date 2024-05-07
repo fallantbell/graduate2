@@ -54,17 +54,17 @@ class re10k_DataLoader(DataLoader):
     def __init__(self, data_dir, batch_size, shuffle=True, 
                 validation_split=0.0, num_workers=1, 
                 mode="train",max_interval = 5,midas_transform = None,
-                infer_len = 20,
+                infer_len = 20, do_latent = True,
                 ):
 
         self.data_dir = data_dir
 
         if mode == "train":
-            self.dataset = Re10k_dataset(self.data_dir,"train",max_interval,midas_transform)
+            self.dataset = Re10k_dataset(self.data_dir,"train",max_interval,midas_transform,do_latent = do_latent)
         elif mode == "validation":
             self.dataset = Re10k_dataset(self.data_dir,"validation")
         else:
-            self.dataset = Re10k_dataset(self.data_dir,"test",midas_transform = midas_transform,infer_len=infer_len)
+            self.dataset = Re10k_dataset(self.data_dir,"test",midas_transform = midas_transform,infer_len=infer_len,do_latent = do_latent)
         
 
         collate_fn=default_collate

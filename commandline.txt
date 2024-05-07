@@ -2,18 +2,23 @@
 
 # training
 
-CUDA_VISIBLE_DEVICES=8,9 \
+CUDA_VISIBLE_DEVICES=3,4 \
 python train.py -c config/config.json \
--r saved/models/re10K_mae/b_48_lr_0.0001_m0.25/checkpoint-epoch110.pth
+-r saved/models/re10K4fps_inter1_epipolar/b_64_lr_0.0001/checkpoint-epoch50.pth
 
 # inference
 
-CUDA_VISIBLE_DEVICES=5 \
+CUDA_VISIBLE_DEVICES=1 \
 python inference.py -c config/inference_config.json \
--r saved/models/re10K4fps_mae/b_48_lr_0.0001_m0.75/checkpoint-epoch60.pth
+-r saved/models/re10K4fps_inter1_epipolar/b_64_lr_0.0001/checkpoint-epoch50.pth
 
 
 # calculate
 
 CUDA_VISIBLE_DEVICES=9 \
 python calculate.py > cal_result.txt
+
+TODO
+1. 修復midas 的結果
+2. 增大Unet 
+3. 做latent diffusion

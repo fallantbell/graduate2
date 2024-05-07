@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from einops import einsum, rearrange, repeat
+from einops import rearrange, repeat
 import torch
 
 from midas.model_loader import default_models, load_model

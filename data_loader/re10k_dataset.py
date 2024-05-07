@@ -20,7 +20,7 @@ def custom_sort(file_name):
         return file_name
 
 class Re10k_dataset(Dataset):
-    def __init__(self,data_root,mode,max_interval=5,midas_transform = None,infer_len = 20):
+    def __init__(self,data_root,mode,max_interval=5,midas_transform = None,infer_len = 20,do_latent = True):
         assert mode == 'train' or mode == 'test' or mode == 'validation'
 
         self.mode = mode
@@ -49,12 +49,26 @@ class Re10k_dataset(Dataset):
         H = 256
         W = 455
 
+        #* 128 x 128 縮放版本
+        H = 128
+        W = 228
+
         #* 64 x 64 縮放版本
-        H = 64
-        W = 114
+        # H = 64
+        # W = 114
+
+        # H = 32
+        # W = 57
+
+        # H = 16
+        # W = 28
 
         self.H = H
         self.W = W
+
+        if do_latent:
+            self.H = 512
+            self.W = 512
 
         self.square_crop = True     #* 是否有做 center crop 
 
@@ -120,7 +134,7 @@ class Re10k_dataset(Dataset):
             # print(f"img ori shape:{img_np.shape}")
             img = Image.fromarray(img_np)
             img = img.resize((self.W,self.H))
-            img = self.crop_image(img)
+            img = self.crop_image(img)      #* (256,256)
             if cnt == 0:
                 src_img_numpy = np.array(img)
                 src_img_numpy = src_img_numpy / 255.0 
@@ -273,3 +287,11 @@ if __name__ == '__main__':
     #     image = rearrange(image,"C H W -> H W C")
     #     image = Image.fromarray(image)
     #     image.save(f"../test_folder/test_{i}.png")
+
+'''
+    testing
+    posed guide diffusion 使用 data
+
+    0 , 20 ...
+
+'''

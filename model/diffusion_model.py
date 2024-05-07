@@ -13,6 +13,7 @@ from torch.cuda.amp import autocast
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 
+from diffusers import AutoencoderKL
 from torch.optim import Adam
 
 from torchvision import transforms as T, utils
@@ -643,13 +644,15 @@ class Epipolar_Attention(nn.Module):
         #* 一般的 cross attention -> 得到 attention map
         cross_attend = self.scale * torch.einsum('b Q d, b K d -> b Q K', q, k)
 
+        weight_map = torch.ones_like(cross_attend)
+
         if self.do_epipolar:
             #* 得到 epipolar weighted map (B,HW,HW)
             epipolar_map = self.get_epipolar(b,h,w,intrinsic.clone(),c2w[1],c2w[0])
 
             epipolar_map = repeat(epipolar_map,'b hw hw2 -> (b repeat) hw hw2',repeat = self.heads)
 
-            cross_attend = cross_attend*epipolar_map
+            weight_map = weight_map*epipolar_map
         
         if self.do_bidirectional_epipolar:
             #* 做反方向的epipolar
@@ -659,8 +662,25 @@ class Epipolar_Attention(nn.Module):
 
             epipolar_map = repeat(epipolar_map_transpose,'b hw hw2 -> (b repeat) hw hw2',repeat = self.heads)
 
-            cross_attend = cross_attend*epipolar_map
+            weight_map = weight_map*epipolar_map
 
+            # if self.do_blur:
+            #     if h == 64:
+            #         kernel_size = 7
+            #     elif h == 32:
+            #         kernel_size = 5
+            #     elif h == 16:
+            #         kernel_size = 3
+            #     else:
+            #         kernel_size = 1
+
+            #     weight_map = rearrange(weight_map,'b hw (c height weight) -> (b hw) c height weight',c=1,height=h)
+
+            #     transform1 = T.GaussianBlur(kernel_size,1.5)
+            #     blurred_weightmap = transform1(weight_map)
+            #     weight_map = rearrange(blurred_weightmap,'(b hw) c h w -> b hw (c h w)',hw=h*w,c=1)
+
+        cross_attend = cross_attend * weight_map
         att = cross_attend.softmax(dim=-1)
 
         # Combine values (image level features).
@@ -754,6 +774,8 @@ class Unet(nn.Module):
         self.do_mae = do_mae
         if self.do_mae:
             self.mask_ratio = mask_ratio
+        
+        self.block_num = len(dim_mults) #* 做多少個block 64,32,16,8 或 32,16,8
 
         init_dim = default(init_dim, dim)
         self.init_conv = nn.Conv2d(input_channels, init_dim, 7, padding = 3)
@@ -798,8 +820,9 @@ class Unet(nn.Module):
 
         FullAttention = partial(Attention, flash = flash_attn)
 
+        self.conv1d_256_128 = nn.Conv2d(256,128,kernel_size=1)
         self.conv1d_256_512 = nn.Conv2d(256,512,kernel_size=1)
-        self.conv1d_256_1024 = nn.Conv2d(256,1024,kernel_size=1)
+        self.conv1d_512_1024 = nn.Conv2d(512,1024,kernel_size=1)
 
         # layers
 
@@ -866,11 +889,14 @@ class Unet(nn.Module):
         mid_dim = dims[-1]
         self.mid_block1 = block_klass(mid_dim, mid_dim, time_emb_dim = time_dim)
         self.mid_attn1 = FullAttention(mid_dim, heads = attn_heads[-1], dim_head = attn_dim_head[-1])
-        self.mid_epipolar_attn1  = epipolar_klass(mid_dim, dim_head = attn_dim_head[-1], heads = attn_heads[-1],do_epipolar=self.do_epipolar,do_bidirectional_epipolar = self.do_bidirectional_epipolar)
+        #* 只做三次epipolar，如果mul_dims=(1,2,4,8)，就不做 mid epipolar atten
+        if self.block_num == 3:
+            self.mid_epipolar_attn1  = epipolar_klass(mid_dim, dim_head = attn_dim_head[-1], heads = attn_heads[-1],do_epipolar=self.do_epipolar,do_bidirectional_epipolar = self.do_bidirectional_epipolar)
 
         self.mid_block2 = block_klass(mid_dim, mid_dim, time_emb_dim = time_dim)
         self.mid_attn2 = FullAttention(mid_dim, heads = attn_heads[-1], dim_head = attn_dim_head[-1])
-        self.mid_epipolar_attn2  = epipolar_klass(mid_dim, dim_head = attn_dim_head[-1], heads = attn_heads[-1],do_epipolar=self.do_epipolar,do_bidirectional_epipolar = self.do_bidirectional_epipolar)
+        if self.block_num == 3:
+            self.mid_epipolar_attn2  = epipolar_klass(mid_dim, dim_head = attn_dim_head[-1], heads = attn_heads[-1],do_epipolar=self.do_epipolar,do_bidirectional_epipolar = self.do_bidirectional_epipolar)
         
         if self.do_mae:
             self.midmae_vit = ViT(image_size = (self.imgsize//(2**(ind+1))),
@@ -898,7 +924,8 @@ class Unet(nn.Module):
 
         self.mid_block3 = block_klass(mid_dim, mid_dim, time_emb_dim = time_dim)
         self.mid_attn3 = FullAttention(mid_dim, heads = attn_heads[-1], dim_head = attn_dim_head[-1])
-        self.mid_epipolar_attn3  = epipolar_klass(mid_dim, dim_head = attn_dim_head[-1], heads = attn_heads[-1],do_epipolar=self.do_epipolar,do_bidirectional_epipolar = self.do_bidirectional_epipolar)
+        if self.block_num == 3:
+            self.mid_epipolar_attn3  = epipolar_klass(mid_dim, dim_head = attn_dim_head[-1], heads = attn_heads[-1],do_epipolar=self.do_epipolar,do_bidirectional_epipolar = self.do_bidirectional_epipolar)
 
         for ind, ((dim_in, dim_out), layer_full_attn, layer_attn_heads, layer_attn_dim_head) in enumerate(zip(*map(reversed, (in_out, full_attn, attn_heads, attn_dim_head)))):
             is_last = ind == (len(in_out) - 1)
@@ -950,18 +977,26 @@ class Unet(nn.Module):
 
         
         #* 因為midas 中間層的dimension 跟diffusion 中間層不同，所以用 1d conv 擴展 (暫時)
-        src_l3 = self.conv1d_256_512(src_l3)
-        src_l4 = self.conv1d_256_1024(src_l4)
+        if self.block_num == 3:
+            src_l3 = self.conv1d_256_512(src_l3)
+            src_l4 = self.conv1d_256_512(src_l4)
+            src_l4 = self.conv1d_512_1024(src_l4)
+        elif self.block_num == 4:
+            src_l2 = self.conv1d_256_128(src_l2)
+            src_l4 = self.conv1d_256_512(src_l4)
 
         src_encode = [src_l2,src_l3,src_l4]   #! 有三個resolution 的source img embedding
-                                            #! 32x32 16x16 8x8
+                                            #! 256 的 midas: 32x32 16x16 8x8
+                                            #! 512 的 midas: 64x64 32x32 16x16
 
         h = []
 
-        x = self.init_res1(x,t)
-        x = self.init_res2(x,t)
-        x = self.init_down(x)
-        h.append(x)
+        #* 小的Unet，在64x64 的block 做簡單的initial
+        if self.block_num == 3:
+            x = self.init_res1(x,t)
+            x = self.init_res2(x,t)
+            x = self.init_down(x)
+            h.append(x)
 
         iter = 0
         for block1, attn1, epi1, block2, attn2, epi2, downsample, attn3, epi3 in self.downs:
@@ -988,17 +1023,20 @@ class Unet(nn.Module):
             iter += 1
             x = downsample(x)
             x = attn3(x) + x
-            x = epi3(x,src_encode[iter],K,c2w) + x
+            if self.block_num == 3:
+                x = epi3(x,src_encode[iter],K,c2w) + x
 
             h.append(x)
 
         x = self.mid_block1(x, t)
         x = self.mid_attn1(x) + x
-        x = self.mid_epipolar_attn1(x,src_encode[iter],K,c2w) + x
+        if self.block_num == 3:
+            x = self.mid_epipolar_attn1(x,src_encode[iter],K,c2w) + x
 
         x = self.mid_block2(x, t)
         x = self.mid_attn2(x) + x
-        x = self.mid_epipolar_attn2(x,src_encode[iter],K,c2w) + x
+        if self.block_num == 3:
+            x = self.mid_epipolar_attn2(x,src_encode[iter],K,c2w) + x
         if self.do_mae:
             src_latent, target_latent = self.midmae_vit(x,src_encode[iter],self.mask_ratio)
             x = self.midmae_cross1(target_latent,src_latent,src_latent)
@@ -1009,7 +1047,8 @@ class Unet(nn.Module):
 
         x = self.mid_block3(x, t)
         x = self.mid_attn3(x) + x
-        x = self.mid_epipolar_attn3(x,src_encode[iter],K,c2w) + x
+        if self.block_num == 3:
+            x = self.mid_epipolar_attn3(x,src_encode[iter],K,c2w) + x
 
 
         for upsample, attn1, epi1, block1, attn2, epi2, block2, attn3, epi3 in self.ups:
@@ -1028,12 +1067,12 @@ class Unet(nn.Module):
             x = attn3(x) + x
             x = epi3(x,src_encode[iter],K,c2w) + x
 
-
-        x = torch.cat((x, h.pop()), dim = 1)
-
-        x = self.final_up(x)
-        x = self.final_res1(x, t)
-        x = self.final_res2(x, t)
+        #* 小的Unet，在64x64 的block 做簡單的conv
+        if self.block_num == 3:
+            x = torch.cat((x, h.pop()), dim = 1)
+            x = self.final_up(x)
+            x = self.final_res1(x, t)
+            x = self.final_res2(x, t)
 
         x = self.final_conv(x)
 
@@ -1099,6 +1138,7 @@ class GaussianDiffusion(nn.Module):
         min_snr_loss_weight = False, # https://arxiv.org/abs/2303.09556
         min_snr_gamma = 5,
         # midas_model = None,
+        do_latent = True,
     ):
         super().__init__()
         assert not (type(self) == GaussianDiffusion and model.channels != model.out_dim)
@@ -1106,6 +1146,10 @@ class GaussianDiffusion(nn.Module):
 
         self.model = model
         # self.midas_model = midas_model
+        self.do_latent = do_latent
+        if self.do_latent:
+            model_key = "stabilityai/stable-diffusion-2-1-base"
+            self.vae = AutoencoderKL.from_pretrained(model_key, subfolder="vae")
 
         self.channels = self.model.channels
         self.self_condition = self.model.self_condition
@@ -1467,6 +1511,12 @@ class GaussianDiffusion(nn.Module):
 
         prev_img = img_seq[0]
         now_img = img_seq[1]
+
+        #* 512x512 -> 64x64
+        if self.do_latent:
+            with torch.no_grad():
+                latents = self.vae.encode(now_img).latent_dist.sample()
+                now_img = 0.18215 * latents
 
         # img = self.normalize(now_img)
         loss = self.p_losses(now_img, t, src_l2, src_l3,src_l4,K,c2w)
