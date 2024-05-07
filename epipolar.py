@@ -273,7 +273,7 @@ if __name__ == '__main__':
     model_weights = default_models[model_type]
     midas_model, midas_transform, net_w, net_h = load_model("cpu", model_weights, model_type, False, None, False)
 
-    test = Re10k_dataset("../dataset","test",midas_transform = midas_transform,do_latent = False)
+    test = Re10k_dataset("../../../disk2/icchiu","test",midas_transform = midas_transform,do_latent = False)
     data = test[0] # 150
 
     prev_img = data['img'][0]
@@ -299,29 +299,7 @@ if __name__ == '__main__':
     #     p1,p2 = get_epipolar(now_img,prev_img,k2,prev_c2w,now_c2w)
 
     #     points.append((p1,p2))
-    
-    # total_img = (now_img+1)/2
-    # total_img = (total_img.permute(1, 2, 0).clamp(0, 1).numpy() * 255).astype(np.uint8)
-    # total_img = np.ascontiguousarray(total_img)
 
-    # for i in range(5):
-    #     target_img = (now_img+1)/2
-    #     target_img = (target_img.permute(1, 2, 0).clamp(0, 1).numpy() * 255).astype(np.uint8)
-    #     target_img = np.ascontiguousarray(target_img)
-    #     color = color_list[i]
-    #     thickness = 1
-    #     cv2.line(target_img, points[i][0], points[i][1], color, thickness)
-    #     cv2.line(total_img, points[i][0], points[i][1], color, thickness)
-
-    #     cv2.line(target_img,(0,60),(60-1,60),(255,255,255),1)
-    #     cv2.line(target_img,(60,0),(60,60-1),(255,255,255),1)
-
-    #     img = Image.fromarray(np.uint8(target_img))
-    #     img.save(f'test_folder/back_epipolars_{i}.png')
-    # img = Image.fromarray(np.uint8(total_img))
-    # img.save(f'test_folder/back_epipolars_all.png')
-
-    # sys.exit()
     h = 128
 
     device = "cuda"
@@ -350,8 +328,8 @@ if __name__ == '__main__':
     foldername = f"test_folder_steep{steep}_error{error_range}_test"
     os.makedirs(f"{foldername}",exist_ok=True)
     for i in range(10):
-        if i!=5:
-            continue
+        # if i!=5:
+        #     continue
         u = np.random.randint(h)
         v = np.random.randint(h)
         u = (h//10)*i
@@ -397,14 +375,14 @@ if __name__ == '__main__':
         weight = (weight.clamp(0, 1).cpu().numpy() * 255).astype(np.uint8)
 
         #* 找backward epipolar map 中空白區域，隨機取幾個點
-        white_area = np.where(weight)
-        point_num = len(white_area)
+        white_area = np.where(weight==255)
+        point_num = len(white_area[0])
         index = np.random.randint(point_num)
-        p0 = (white_area[0][index],white_area[1][index])
+        p0 = (white_area[1][index],white_area[0][index])
         index = np.random.randint(point_num)
-        p1 = (white_area[0][index],white_area[1][index])
+        p1 = (white_area[1][index],white_area[0][index])
         index = np.random.randint(point_num)
-        p2 = (white_area[0][index],white_area[1][index])
+        p2 = (white_area[1][index],white_area[0][index])
 
         cv2.imwrite(f'{foldername}/u_{u}_v_{v}/backward_epipolar_map.png', weight)
 
@@ -436,23 +414,26 @@ if __name__ == '__main__':
         
             p1,p2 = get_epipolar(now_img,prev_img,k2,prev_c2w,now_c2w)
             
-            target_img = (now_img+1)/2
-            target_img = (target_img.permute(1, 2, 0).clamp(0, 1).numpy() * 255).astype(np.uint8)
-            target_img = np.ascontiguousarray(target_img)
+            n_img = (now_img+1)/2
+            n_img  = (n_img .permute(1, 2, 0).clamp(0, 1).numpy() * 255).astype(np.uint8)
+            n_img  = np.ascontiguousarray(n_img )
             color = color_list[idx]
             idx+=1
             thickness = 1
-            cv2.line(target_img, p1, p2, color, thickness)
+            cv2.line(n_img , p1, p2, color, thickness)
             cv2.line(total_img, p1, p2, color, thickness)
 
-            cv2.line(target_img,(0,u),(v-1,u),(255,255,255),1)
-            cv2.line(target_img,(v,0),(v,u-1),(255,255,255),1)
+            cv2.line(n_img ,(0,(h//10)*i),((h//10)*i-1,(h//10)*i),(255,255,255),1)
+            cv2.line(n_img ,((h//10)*i,0),((h//10)*i,(h//10)*i-1),(255,255,255),1)
 
-            img = Image.fromarray(np.uint8(target_img))
-            img.save(f'{foldername}/back_epipolars_{u2}_{v2}.png')
+            img = Image.fromarray(np.uint8(n_img ))
+            img.save(f'{foldername}/u_{(h//10)*i}_v_{(h//10)*i}/back_epipolars_{u2}_{v2}.png')
         
         img = Image.fromarray(np.uint8(total_img))
-        img.save(f'{foldername}/back_epipolars_all.png')
+        img.save(f'{foldername}/u_{(h//10)*i}_v_{(h//10)*i}/back_epipolars_all.png')
+
+        u = (h//10)*i
+        v = u
 
         #* bidirection
         weight_map = weight_map_bidirection[v*h+u]
@@ -472,11 +453,6 @@ if __name__ == '__main__':
         k = 3
         weight = rearrange(weight_map, '(h w) -> h w',h=h)
 
-        # kernel_tensor = torch.rand(k,k).to(dtype=torch.float32)
-        # kernel_tensor = kernel_tensor.to(device)
-        # blurred_tensor = F.conv2d(weight.unsqueeze(0).unsqueeze(0), \
-        #                           kernel_tensor.unsqueeze(0).unsqueeze(0), padding=(k-1)//2)
-        # blurred_tensor = blurred_tensor.squeeze()
         transform1 = T.GaussianBlur(k,1.5)
         blurred_tensor = transform1(weight.unsqueeze(0).unsqueeze(0))
         blurred_tensor = blurred_tensor.squeeze()
@@ -493,11 +469,7 @@ if __name__ == '__main__':
         k = 5
         weight = rearrange(weight_map, '(h w) -> h w',h=h)
 
-        # kernel_tensor = torch.rand(k,k).to(dtype=torch.float32)
-        # kernel_tensor = kernel_tensor.to(device)
-        # blurred_tensor = F.conv2d(weight.unsqueeze(0).unsqueeze(0), \
-        #                           kernel_tensor.unsqueeze(0).unsqueeze(0), padding=(k-1)//2)
-        # blurred_tensor = blurred_tensor.squeeze()
+
         transform1 = T.GaussianBlur(k,1.5)
         blurred_tensor = transform1(weight.unsqueeze(0).unsqueeze(0))
         blurred_tensor = blurred_tensor.squeeze()
@@ -514,11 +486,6 @@ if __name__ == '__main__':
         k = 7
         weight = rearrange(weight_map, '(h w) -> h w',h=h)
 
-        # kernel_tensor = torch.rand(k,k).to(dtype=torch.float32)
-        # kernel_tensor = kernel_tensor.to(device)
-        # blurred_tensor = F.conv2d(weight.unsqueeze(0).unsqueeze(0), \
-        #                           kernel_tensor.unsqueeze(0).unsqueeze(0), padding=(k-1)//2)
-        # blurred_tensor = blurred_tensor.squeeze()
         transform1 = T.GaussianBlur(k,1.5)
         blurred_tensor = transform1(weight.unsqueeze(0).unsqueeze(0))
         blurred_tensor = blurred_tensor.squeeze()

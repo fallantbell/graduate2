@@ -28,6 +28,7 @@ def main(config):
 
     do_epipolar = config['args']['do_epipolar']
     do_bidirectional_epipolar = config['args']['do_bidirectional_epipolar']
+    do_blur = config['args']['do_blur']
     do_mae = config['args']['do_mae']
     do_latent = config['args']['do_latent']
     big_unet = config['args']['big_unet']
@@ -64,6 +65,7 @@ def main(config):
             out_dim=4,
             do_epipolar = do_epipolar,
             do_bidirectional_epipolar = do_bidirectional_epipolar,
+            do_blur = do_blur,
             do_mae = do_mae,
             mask_ratio = mask_ratio,
         )
@@ -77,6 +79,7 @@ def main(config):
           out_dim=3,
           do_epipolar = do_epipolar,
           do_bidirectional_epipolar = do_bidirectional_epipolar,
+          do_blur = do_blur,
           do_mae = do_mae,
           mask_ratio = mask_ratio,
       )

@@ -54,8 +54,8 @@ class Re10k_dataset(Dataset):
         W = 228
 
         #* 64 x 64 縮放版本
-        # H = 64
-        # W = 114
+        H = 64
+        W = 114
 
         # H = 32
         # W = 57
